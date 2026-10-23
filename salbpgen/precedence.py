@@ -1,24 +1,34 @@
-"""Precedence graph generation following the SALBPGen idea.
+"""Precedence graph generation (arc generation part of SALBPGen).
 
-Two phases:
+Follows Section 5.1 of Otto, Otto & Scholl (2013). The centrepiece is the
+concept of *stages*: the stage of a task is its depth, i.e. the maximal number
+of arcs on a path from a dummy source to the task.
 
-1. **Skeleton** – imposes the requested structure type
-   * ``MIXED``: no skeleton (no prominent structure);
-   * ``BN`` (bottlenecks): a few tasks with many direct predecessors and
-     successors, through which many paths run;
-   * ``CH`` (chains): a share of the tasks is organised in linear chains
-     (each inner task has exactly one predecessor and one successor).
-2. **Fill** – random non-redundant arcs are added until the order strength
-   reaches the target (within a tolerance). Ordinary tasks respect a maximum
-   number of direct predecessors/successors, chain interiors stay untouched and
-   skeleton arcs are never made redundant.
+1. Choose the number of stages K (default: maximal precedence flexibility,
+   Theorem 1 / Table 3; for extreme OS values K grows linearly with OS).
+2. Generate the optional graph structures (chains, bottlenecks, isolated
+   tasks) and place them randomly into the stages.
+3. Assign the remaining tasks to the stages. Stage sizes follow a truncated
+   normal distribution, every stage holds at least one task and at least one
+   task that can precede the tasks of the next stage.
+4. Renumber the tasks topologically (stage by stage) and connect every task to
+   the previous stage.
+5. Add random arcs between not yet connected task pairs until the order
+   strength lies within the tolerance. If that fails, the whole procedure is
+   repeated; after ``max_attempts`` attempts an error is raised.
 
-Tasks are numbered topologically up front (every arc goes from a lower to a
-higher index), which is the usual convention of SALBP data files.
+Definitions (Section 4.1.2):
+
+* a *bottleneck* is the only direct follower of at least two of its direct
+  predecessors and the only direct predecessor of at least two of its direct
+  followers (degree >= 4);
+* *chain* tasks form a path and each has at most one direct predecessor and
+  at most one direct follower; a chain has at least two tasks.
 """
 
 from __future__ import annotations
 
+import math
 import random
 from dataclasses import dataclass, field
 
@@ -26,296 +36,364 @@ from .graph import PrecedenceGraph, iter_bits, nth_set_bit
 
 STRUCTURES = ("MIXED", "BN", "CH")
 
+# Table 3: number of stages with maximal flexibility in order strength
+TABLE3_STAGES = {20: 6, 30: 8, 40: 9, 50: 11, 60: 12, 70: 14, 80: 15, 90: 16, 100: 17,
+                 125: 20, 150: 23, 175: 25, 200: 27, 300: 36}
 
+
+class GenerationError(RuntimeError):
+    pass
+
+
+# ---------------------------------------------------------------- OS bounds
+def os_min(n: int, K: int) -> float:
+    """Lowest achievable OS with K stages (Theorem 1): a single path through all stages."""
+    return K * (K - 1) / (n * (n - 1)) if n > 1 else 0.0
+
+
+def os_max(n: int, K: int) -> float:
+    """Highest achievable OS with K stages (Theorem 1): equal stage sizes, complete
+    connections between consecutive stages."""
+    if n < 2:
+        return 0.0
+    q, h = divmod(n, K)
+    within = h * math.comb(q + 1, 2) + (K - h) * math.comb(q, 2)
+    return 1.0 - within / math.comb(n, 2)
+
+
+def max_flexibility_stages(n: int) -> int:
+    """K with the largest OSmax - OSmin, attained where n^2 = K^2 (2K - 1)."""
+    if n in TABLE3_STAGES:
+        return TABLE3_STAGES[n]
+    return min(range(1, n + 1), key=lambda K: abs(K * K * (2 * K - 1) - n * n))
+
+
+def default_stages(n: int, order_strength: float) -> int:
+    """Default K: maximal flexibility unless the OS lies outside its bounds; then K
+    is linear in OS (K = 1 for OS = 0, K = n for OS = 1)."""
+    K = max_flexibility_stages(n)
+    if os_min(n, K) <= order_strength <= os_max(n, K):
+        return K
+    return min(n, max(1, round(1 + order_strength * (n - 1))))
+
+
+# ------------------------------------------------------------------- params
 @dataclass
 class GraphParams:
     n: int
     order_strength: float
-    structure: str = "MIXED"
     os_tolerance: float = 0.005
-    # limits on direct predecessors / successors for ordinary tasks
-    max_pred: int = 3
-    max_succ: int = 3
-    # BN: number of bottlenecks (None -> max(1, round(n / 50))) and degree range
-    n_bottlenecks: int | None = None
-    bottleneck_degree: tuple[int, int] = (4, 7)
-    # CH: share of tasks lying in chains and range of chain lengths
-    chain_share: float = 0.5
-    chain_length: tuple[int, int] = (3, 8)
-    # fill phase
-    connect_isolated: bool = True
-    locality: float = 0.5  # probability of drawing a partner close in the numbering
-    patience: int | None = None  # failed attempts before relaxing (None -> auto)
-    max_relaxations: int = 10
-    # renumber tasks with a random topological order at the end, so that the
-    # construction (blocks, chain positions) is not visible in the numbering
-    shuffle_labels: bool = True
-    # full restarts (with fresh random numbers) if the OS target is missed
-    restarts: int = 20
+    n_stages: int | None = None  # None -> default_stages(n, OS), adapted on failures
+    stage_size_sd: float = 0.5  # sd of the truncated normal stage size, relative to n/K
+    # chains: either a number of chains or a target share of chain tasks
+    n_chains: int = 0
+    chain_share: float = 0.0
+    chain_length: tuple[int, int] = (2, 6)
+    # bottlenecks: number and range of direct predecessors / followers each
+    n_bottlenecks: int = 0
+    bottleneck_in: tuple[int, int] = (4, 7)
+    bottleneck_out: tuple[int, int] = (4, 7)
+    n_isolated: int = 0
+    # optional limits on direct predecessors / followers of ordinary tasks
+    max_pred: int | None = None
+    max_succ: int | None = None
+    max_attempts: int = 100
+    patience: int | None = None  # rejected arcs before an attempt is given up
 
     def __post_init__(self):
-        self.structure = self.structure.upper()
-        if self.structure not in STRUCTURES:
-            raise ValueError(f"structure must be one of {STRUCTURES}")
-        if not 0.0 <= self.order_strength <= 1.0:
-            raise ValueError("order_strength must be in [0, 1]")
         if self.n < 1:
             raise ValueError("n must be positive")
+        if not 0.0 <= self.order_strength <= 1.0:
+            raise ValueError("order_strength must be in [0, 1]")
+
+
+def structure_preset(structure: str, n: int) -> dict:
+    """Settings of the graph categories of the 2013 data sets (Section 5.3).
+
+    * CH: at least 40% chain tasks;
+    * BN: bottlenecks with degree >= 8 (>= 4 for small instances);
+    * MIXED: default settings, no control of chains / bottlenecks.
+
+    The number of bottlenecks (2% of the tasks, at least 1), the degree ranges
+    and the chain lengths are not given in the paper; they are chosen inside
+    the ranges observed for real-world graphs (Table 1: 1-6% bottleneck tasks
+    with average degree 5-14, 30-45% chain tasks).
+    """
+    s = structure.upper()
+    if s == "MIXED":
+        return {}
+    if s == "CH":
+        return {"chain_share": 0.4, "chain_length": (2, 6)}
+    if s == "BN":
+        small = n <= 20
+        rng_deg = (2, 3) if small else (4, 7)
+        return {
+            "n_bottlenecks": max(1, round(0.02 * n)),
+            "bottleneck_in": rng_deg,
+            "bottleneck_out": rng_deg,
+        }
+    raise ValueError(f"structure must be one of {STRUCTURES}")
 
 
 @dataclass
 class GraphResult:
     graph: PrecedenceGraph
+    stages: list[int]  # stage (1..K) of every task
     bottlenecks: list[int] = field(default_factory=list)
     chains: list[list[int]] = field(default_factory=list)
+    isolated: list[int] = field(default_factory=list)
+    attempts: int = 1
     warnings: list[str] = field(default_factory=list)
 
+    @property
+    def n_stages(self) -> int:
+        return max(self.stages, default=0)
 
-class _Builder:
-    def __init__(self, p: GraphParams, rng: random.Random):
-        self.p = p
-        self.rng = rng
-        self.n = p.n
-        self.g = PrecedenceGraph(p.n)
-        self.protected: set[tuple[int, int]] = set()
-        self.lock_in: set[int] = set()  # tasks that may not receive new predecessors
-        self.lock_out: set[int] = set()  # tasks that may not receive new successors
-        self.exempt: set[int] = set()  # tasks without degree limits (bottlenecks)
-        self.isolated: set[int] = set(range(p.n))
-        self.max_pred = p.max_pred
-        self.max_succ = p.max_succ
-        self.res = GraphResult(self.g)
-        self.full = (1 << p.n) - 1
 
-    # -------------------------------------------------------------- helpers
-    def _add(self, i: int, j: int, protect: bool = False) -> None:
-        removed = self.g.add_arc(i, j)
-        for a, b in removed:
-            self.protected.discard((a, b))
-        if protect:
-            self.protected.add((i, j))
-        for v in (i, j, *(x for arc in removed for x in arc)):
-            if self.g.in_degree(v) or self.g.out_degree(v):
-                self.isolated.discard(v)
-            else:
-                self.isolated.add(v)
+class _AttemptFailed(Exception):
+    def __init__(self, reason: str):
+        self.reason = reason  # "too_high" | "too_low" | "layout"
 
-    # ------------------------------------------------------------- skeletons
-    def skeleton_chains(self) -> None:
-        p, rng, n = self.p, self.rng, self.n
-        lmin, lmax = p.chain_length
-        lmin = max(2, lmin)
-        target = round(p.chain_share * n)
-        lengths, used = [], 0
-        while used < target:
-            L = min(rng.randint(lmin, lmax), target - used)
+
+# ------------------------------------------------------------------ attempt
+class _Attempt:
+    def __init__(self, p: GraphParams, K: int, rng: random.Random):
+        self.p, self.K, self.rng, self.n = p, K, rng, p.n
+
+    # -- step 1-3: layout ------------------------------------------------
+    def _stage_sizes(self) -> list[int]:
+        n, K, rng = self.n, self.K, self.rng
+        mu = n / K
+        sd = self.p.stage_size_sd * mu
+        sizes = []
+        for _ in range(K):
+            while True:
+                x = round(rng.gauss(mu, sd)) if sd > 0 else round(mu)
+                if 1 <= x <= n - K + 1:
+                    break
+            sizes.append(x)
+        while sum(sizes) > n:
+            k = rng.choice([k for k in range(K) if sizes[k] > 1])
+            sizes[k] -= 1
+        while sum(sizes) < n:
+            sizes[rng.randrange(K)] += 1
+        return sizes
+
+    def layout(self):
+        p, K, rng = self.p, self.K, self.rng
+        free = self._stage_sizes()  # remaining planned capacity per stage (0-based)
+        stage, cap_in, cap_out = [], [], []
+        arcs, chains, bottlenecks, isolated = [], [], [], []
+
+        def new(k, ci=None, co=None):
+            stage.append(k)
+            cap_in.append(ci)
+            cap_out.append(co)
+            free[k] -= 1
+            return len(stage) - 1
+
+        def pick_start(span_needs):
+            """Choose a stage k so that stage k + d needs span_needs[d] slots."""
+            L = len(span_needs)
+            starts = list(range(K - L + 1))
+            if not starts:
+                return None
+            fitting = [k for k in starts if all(free[k + d] >= m for d, m in enumerate(span_needs))]
+            return rng.choice(fitting or starts)
+
+        # chains: whole chain has <=1 predecessor / follower per task
+        lengths = []
+        if p.chain_share > 0:
+            target = math.ceil(p.chain_share * self.n)
+            while sum(lengths) < target:
+                lengths.append(rng.randint(max(2, p.chain_length[0]), max(2, p.chain_length[1])))
+        lengths += [rng.randint(max(2, p.chain_length[0]), max(2, p.chain_length[1])) for _ in range(p.n_chains)]
+        for L in lengths:
+            L = min(L, K)
             if L < 2:
-                break
-            lengths.append(L)
-            used += L
-        units = [("chain", L) for L in lengths] + [("single", 1)] * (n - used)
-        rng.shuffle(units)
-        pos = 0
-        for kind, L in units:
-            if kind == "chain":
-                chain = list(range(pos, pos + L))
-                for a, b in zip(chain, chain[1:]):
-                    self._add(a, b, protect=True)
-                self.lock_out.update(chain[:-1])
-                self.lock_in.update(chain[1:])
-                self.res.chains.append(chain)
-            pos += L
+                raise _AttemptFailed("layout")
+            k0 = pick_start([1] * L)
+            chain = [new(k0 + d, 1, 1) for d in range(L)]
+            arcs += list(zip(chain, chain[1:]))
+            chains.append(chain)
 
-    def skeleton_bottlenecks(self) -> None:
-        p, rng, n = self.p, self.rng, self.n
-        k = p.n_bottlenecks if p.n_bottlenecks is not None else max(1, round(n / 50))
-        dmin, dmax = p.bottleneck_degree
-        if dmin <= max(p.max_pred, p.max_succ):
-            self.res.warnings.append(
-                "bottleneck degree not above max_pred/max_succ: bottlenecks may not stand out"
-            )
-        # place bottlenecks evenly over the numbering, with a little jitter
-        positions = []
-        for q in range(k):
-            centre = (q + 1) * n / (k + 1)
-            jitter = rng.uniform(-0.25, 0.25) * n / (k + 1)
-            positions.append(min(n - 1, max(0, int(round(centre + jitter)))))
-        positions = sorted(set(positions))
-        # Degree caps so the requested OS stays reachable:
-        # * the direct predecessors (successors) of a bottleneck must remain pairwise
-        #   incomparable, which costs 2*C(d, 2) incomparable pairs -> high OS limit;
-        # * the skeleton alone orders (d+1)^2 - 1 pairs -> low OS limit.
-        k = len(positions)
-        total = n * (n - 1) / 2
-        budget_inc = 0.75 * (1.0 - p.order_strength) * total / k
-        budget_cmp = 0.75 * p.order_strength * total / k
-        cap_hi = int((1 + (1 + 4 * budget_inc) ** 0.5) / 2)  # d(d-1) <= budget_inc
-        cap_lo = int((budget_cmp + 1) ** 0.5) - 1  # (d+1)^2 - 1 <= budget_cmp
-        d_cap = max(2, min(cap_hi, cap_lo))
-        if d_cap < dmin:
-            self.res.warnings.append(
-                f"bottleneck degree capped at {d_cap} to make OS={p.order_strength} reachable"
-            )
-        bounds = [-1, *positions, n]
-        for idx, b in enumerate(positions):
-            # predecessors / successors form contiguous blocks next to the bottleneck
-            # (the final random relabelling hides this in the numbering)
-            n_before = b - bounds[idx] - 1
-            n_after = bounds[idx + 2] - b - 1
-            d_in = min(rng.randint(dmin, dmax), n_before, d_cap)
-            d_out = min(rng.randint(dmin, dmax), n_after, d_cap)
-            if min(d_in, d_out) < min(dmin, d_cap):
-                self.res.warnings.append(f"bottleneck {b + 1}: segment too small for degree {dmin}")
-            for u in range(b - d_in, b):
-                if not self.g.reaches(u, b):
-                    self._add(u, b, protect=True)
-            for w in range(b + 1, b + 1 + d_out):
-                if not self.g.reaches(b, w):
-                    self._add(b, w, protect=True)
-            self.exempt.add(b)
-            self.res.bottlenecks.append(b)
+        # bottlenecks: b at stage k, its predecessors at k-1, followers at k+1
+        for _ in range(p.n_bottlenecks):
+            if K < 3:
+                raise _AttemptFailed("layout")
+            d_in = rng.randint(*p.bottleneck_in)
+            d_out = rng.randint(*p.bottleneck_out)
+            k0 = pick_start([d_in, 1, d_out])
+            b = new(k0 + 1)
+            for _ in range(d_in):
+                arcs.append((new(k0, None, 1), b))  # b is its only follower
+            for _ in range(d_out):
+                arcs.append((b, new(k0 + 2, 1, None)))  # b is its only predecessor
+            bottlenecks.append(b)
 
-    # ------------------------------------------------------------------ fill
-    def _partner(self, u: int, as_tail: bool) -> int | None:
-        n, g, rng = self.n, self.g, self.rng
-        if as_tail:
-            cand = ~g.reach[u] & self.full & ~((1 << (u + 1)) - 1)
-        else:
-            cand = ~g.reached_by[u] & ((1 << u) - 1)
-        if not cand:
-            return None
-        if rng.random() < self.p.locality:
-            w = max(3, n // 10)
-            if as_tail:
-                local = cand & ((1 << min(n, u + 1 + w)) - 1)
-            else:
-                local = cand & ~((1 << max(0, u - w)) - 1)
-            if local:
-                cand = local
-        return nth_set_bit(cand, rng.randrange(cand.bit_count()))
+        for _ in range(p.n_isolated):
+            isolated.append(new(0, 0, 0))
 
-    def _candidate(self) -> tuple[int, int] | None:
-        rng = self.rng
-        if self.p.connect_isolated and self.isolated and rng.random() < 0.5:
-            u = rng.choice(tuple(self.isolated))
-        else:
-            u = rng.randrange(self.n)
-        first = rng.random() < 0.5
-        for as_tail in (first, not first):
-            v = self._partner(u, as_tail)
-            if v is not None:
-                return (u, v) if as_tail else (v, u)
-        return None
+        rest = self.n - len(stage)
+        if rest < 0:
+            raise _AttemptFailed("layout")
+        # "required" tasks: every stage non-empty, and every stage below K holds a
+        # task without a follower limit, able to precede the next stage
+        by_stage = [[] for _ in range(K)]
+        for v, k in enumerate(stage):
+            by_stage[k].append(v)
+        for k in range(K):
+            needs = not by_stage[k] or (k < K - 1 and all(cap_out[v] is not None for v in by_stage[k]))
+            if needs:
+                if rest == 0:
+                    raise _AttemptFailed("layout")
+                by_stage[k].append(new(k))
+                rest -= 1
+        # remaining tasks follow the planned stage sizes
+        for _ in range(rest):
+            weights = [max(f, 0) for f in free]
+            if not any(weights):
+                weights = [1] * K
+            k = rng.choices(range(K), weights)[0]
+            new(k)
 
-    def _allowed(self, i: int, j: int) -> bool:
-        g = self.g
-        if i in self.lock_out or j in self.lock_in:
-            return False
-        if i not in self.exempt and g.out_degree(i) >= self.max_succ:
-            return False
-        if j not in self.exempt and g.in_degree(j) >= self.max_pred:
-            return False
-        if self.protected and any(a in self.protected for a in g.made_redundant(i, j)):
-            return False
-        return True
+        # step 4: topological renumbering, stage by stage (random order inside a stage)
+        order = sorted(range(len(stage)), key=lambda v: (stage[v], rng.random()))
+        nid = [0] * len(order)
+        for i, v in enumerate(order):
+            nid[v] = i
+        self.stage = [stage[v] + 1 for v in order]
+        self.cap_in = [cap_in[v] for v in order]
+        self.cap_out = [cap_out[v] for v in order]
+        for v in range(self.n):  # global limits for ordinary tasks
+            if self.cap_in[v] is None and p.max_pred is not None:
+                self.cap_in[v] = p.max_pred
+            if self.cap_out[v] is None and p.max_succ is not None:
+                self.cap_out[v] = p.max_succ
+        self.struct_arcs = [(nid[a], nid[b]) for a, b in arcs]
+        self.chains = [[nid[v] for v in ch] for ch in chains]
+        self.bottlenecks = [nid[b] for b in bottlenecks]
+        self.isolated = [nid[v] for v in isolated]
 
-    def fill(self) -> None:
-        p, g = self.p, self.g
+    # -- helpers on capacities -------------------------------------------
+    def _in_ok(self, v):
+        c = self.cap_in[v]
+        return c is None or self.g.in_degree(v) < c
+
+    def _out_ok(self, v):
+        c = self.cap_out[v]
+        return c is None or self.g.out_degree(v) < c
+
+    def _refresh(self, v):
+        bit = 1 << v
+        self.in_free = self.in_free | bit if self._in_ok(v) else self.in_free & ~bit
+        self.out_free = self.out_free | bit if self._out_ok(v) else self.out_free & ~bit
+
+    def _add(self, u, v):
+        removed = self.g.add_arc(u, v)
+        for x in {u, v, *(y for arc in removed for y in arc)}:
+            self._refresh(x)
+
+    # -- step 4-5: arcs ----------------------------------------------------
+    def build(self) -> GraphResult:
+        self.layout()
+        n, K, rng, p = self.n, self.K, self.rng, self.p
+        self.g = g = PrecedenceGraph(n)
+        self.in_free = self.out_free = 0
+        for v in range(n):
+            self._refresh(v)
+        for u, v in self.struct_arcs:
+            self._add(u, v)
+
+        first = [0] * (K + 2)  # first id of every stage (ids are stage-ordered)
+        for v in reversed(range(n)):
+            first[self.stage[v]] = v
+        first[K + 1] = n
+        members = [list(range(first[k], first[k + 1])) for k in range(K + 1)]
+
+        # connect every task to the previous stage
+        for k in range(2, K + 1):
+            prev = members[k - 1]
+            for v in members[k]:
+                if any(self.stage[u] == k - 1 for u in g.pred[v]):
+                    continue
+                cands = [u for u in prev if self._out_ok(u)]
+                if not cands or not self._in_ok(v):
+                    raise _AttemptFailed("layout")
+                self._add(rng.choice(cands), v)
+
         total = g.max_pairs
         if total == 0:
-            return
+            return self._result()
         target = p.order_strength * total
         tol = max(1, int(p.os_tolerance * total))
         if g.closure_size > target + tol:
-            self.res.warnings.append(
-                f"skeleton alone has OS={g.order_strength:.3f} > target {p.order_strength}"
-            )
-            return
-        patience = p.patience or (20 * self.n + 200)
-        fails, relaxations = 0, 0
-        best = None  # (distance, arc) of the best overshooting candidate
+            raise _AttemptFailed("too_high")
+
+        later = [((1 << n) - 1) & ~((1 << first[k + 1]) - 1) for k in range(K + 1)]
+        out_list = list(range(n))
+        patience = p.patience or (10 * n + 500)
+        fails = 0
         while g.closure_size < target - tol:
-            cand = self._candidate()
-            if cand is not None and self._allowed(*cand):
-                gain = g.gain(*cand)
-                if gain and g.closure_size + gain <= target + tol:
-                    self._add(*cand)
-                    fails, best = 0, None
-                    continue
-                if gain:
-                    dist = abs(g.closure_size + gain - target)
-                    if best is None or dist < best[0]:
-                        best = (dist, cand)
-            fails += 1
-            if fails < patience:
-                continue
-            if best is not None and best[0] < abs(g.closure_size - target):
-                self._add(*best[1])
-                fails, best = 0, None
-                continue
-            if relaxations >= p.max_relaxations:
-                self.res.warnings.append(
-                    f"could not reach OS target: got {g.order_strength:.4f}, wanted {p.order_strength}"
-                )
-                return
-            relaxations += 1
-            self.max_pred += 1
-            self.max_succ += 1
-            self.res.warnings.append(
-                f"relaxed degree limits to pred<={self.max_pred}, succ<={self.max_succ}"
-            )
-            fails, best = 0, None
+            # random not yet connected pair (u, v) with stage(u) < stage(v);
+            # u is accepted with probability |candidates(u)| / n -> pairs are uniform
+            u = rng.choice(out_list)
+            if not (self.out_free >> u) & 1:
+                fails += 1
+            else:
+                cand = later[self.stage[u]] & ~g.reach[u] & self.in_free
+                cnt = cand.bit_count()
+                if cnt == 0 or rng.random() * n >= cnt:
+                    fails += 1
+                else:
+                    v = nth_set_bit(cand, rng.randrange(cnt))
+                    gain = g.gain(u, v)
+                    if g.closure_size + gain <= target + tol:
+                        self._add(u, v)
+                        fails = 0
+                        continue
+                    fails += 1
+            if fails > patience:
+                raise _AttemptFailed("too_low")
+        return self._result()
+
+    def _result(self) -> GraphResult:
+        return GraphResult(self.g, self.stage, self.bottlenecks, self.chains, self.isolated)
 
 
 def generate_precedence_graph(params: GraphParams, rng: random.Random | int | None = None) -> GraphResult:
+    """Generate a precedence graph; raises GenerationError after max_attempts failures."""
     if not isinstance(rng, random.Random):
         rng = random.Random(rng)
-    total = params.n * (params.n - 1) / 2
-    tol = max(1, int(params.os_tolerance * total))
-    target = params.order_strength * total
-    best = None
-    for attempt in range(params.restarts + 1):
-        b = _Builder(params, rng)
-        if params.structure == "CH":
-            b.skeleton_chains()
-        elif params.structure == "BN":
-            b.skeleton_bottlenecks()
-        b.fill()
-        miss = abs(b.g.closure_size - target)
-        if best is None or miss < best[0]:
-            best = (miss, b.res)
-        if miss <= tol:
-            break
-    res = best[1]
-    if attempt:
-        res.warnings.append(f"needed {attempt} restart(s)")
-    if params.shuffle_labels:
-        res = _relabel(res, rng)
-    return res
-
-
-def _relabel(res: GraphResult, rng: random.Random) -> GraphResult:
-    """Renumber the tasks along a random topological order (random linear extension)."""
-    g = res.graph
-    indeg = [g.in_degree(v) for v in range(g.n)]
-    ready = [v for v in range(g.n) if indeg[v] == 0]
-    new_id = [0] * g.n
-    k = 0
-    while ready:
-        v = ready.pop(rng.randrange(len(ready)))
-        new_id[v] = k
-        k += 1
-        for w in g.succ[v]:
-            indeg[w] -= 1
-            if indeg[w] == 0:
-                ready.append(w)
-    ng = PrecedenceGraph.from_arcs(g.n, sorted((new_id[i], new_id[j]) for i, j in g.arcs()))
-    return GraphResult(
-        ng,
-        bottlenecks=sorted(new_id[b] for b in res.bottlenecks),
-        chains=[[new_id[v] for v in ch] for ch in res.chains],
-        warnings=res.warnings,
+    K = params.n_stages or default_stages(params.n, params.order_strength)
+    fixed_K = params.n_stages is not None
+    reasons: dict[str, int] = {}
+    warnings = []
+    for attempt in range(1, params.max_attempts + 1):
+        try:
+            res = _Attempt(params, K, rng).build()
+        except _AttemptFailed as e:
+            reasons[e.reason] = reasons.get(e.reason, 0) + 1
+            # extension of the paper: if attempts keep failing in the same direction,
+            # move K towards the linear K(OS) rule
+            if not fixed_K and attempt % 5 == 0:
+                if e.reason == "too_high" and K > 1:
+                    K -= 1
+                    warnings.append(f"number of stages lowered to {K}")
+                elif e.reason in ("too_low", "layout") and K < params.n:
+                    K += 1
+                    warnings.append(f"number of stages raised to {K}")
+            continue
+        res.attempts = attempt
+        res.warnings = warnings
+        return res
+    raise GenerationError(
+        f"no graph with n={params.n}, OS={params.order_strength} after {params.max_attempts} attempts {reasons}"
     )
 
 
-__all__ = ["GraphParams", "GraphResult", "STRUCTURES", "generate_precedence_graph", "iter_bits"]
+__all__ = [
+    "GenerationError", "GraphParams", "GraphResult", "STRUCTURES", "TABLE3_STAGES",
+    "default_stages", "generate_precedence_graph", "max_flexibility_stages",
+    "os_max", "os_min", "structure_preset", "iter_bits",
+]
