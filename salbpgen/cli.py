@@ -1,4 +1,4 @@
-"""Command line interface: ``salbpgen {generate,dataset,stats,trickiness}``."""
+"""Command line interface: ``salbpgen {generate,dataset,stats,trickiness,nrps}``."""
 
 from __future__ import annotations
 
@@ -10,6 +10,7 @@ import sys
 from .generator import (
     PAPER_BLOCKS, PAPER_SIZES, PAPER_TIME_DISTS, InstanceParams, generate_dataset, generate_instance,
 )
+from .features import FeatureParams, critical_path, generate_nrps
 from .instance import Instance
 from .precedence import STRUCTURES
 from .stats import instance_stats
@@ -93,6 +94,21 @@ def main(argv: list[str] | None = None) -> int:
     t.add_argument("--optimum", type=int, help="known optimal number of stations (single file)")
     t.add_argument("--seed", default=None)
 
+    f = sub.add_parser("nrps", help="NRP-S instance made of features, with critical features longer than T")
+    f.add_argument("-n", type=int, required=True, help="number of tasks")
+    f.add_argument("-T", "--horizon", type=int, required=True, help="horizon in periods")
+    f.add_argument("--critical", type=int, default=1, help="number of critical features")
+    f.add_argument("--cp-ratio", type=float, default=1.2,
+                   help="critical path of each critical feature / T, fastest developer")
+    f.add_argument("--speedup", type=float, default=1.4, help="speed factor of the fastest developer")
+    f.add_argument("--critical-width", type=int, default=2, help="tasks per stage of a critical feature")
+    f.add_argument("--feature-os", type=float, default=0.1, help="order strength of the other features")
+    f.add_argument("--inter-share", type=float, default=0.35, help="share of arcs between features")
+    f.add_argument("--alpha", type=float, default=1.0, help="value by depth: 0 uniform, high = last tasks")
+    f.add_argument("--periods-per-sp", type=int, default=1)
+    f.add_argument("--seed", default=None)
+    f.add_argument("-o", "--output", required=True, help="output file (classic NRP format) + .json")
+
     a = ap.parse_args(argv)
 
     if a.cmd == "generate":
@@ -117,6 +133,16 @@ def main(argv: list[str] | None = None) -> int:
         w = csv.DictWriter(sys.stdout, fieldnames=list(rows[0]))
         w.writeheader()
         w.writerows(rows)
+    elif a.cmd == "nrps":
+        fp = FeatureParams(a.n, a.horizon, a.critical, a.cp_ratio, a.speedup, a.critical_width,
+                           a.feature_os, inter_share=a.inter_share, alpha=a.alpha,
+                           periods_per_sp=a.periods_per_sp)
+        inst = generate_nrps(fp, a.seed)
+        inst.write(a.output)
+        crit = [x.critical_path_fast for x in inst.features if x.critical]
+        print(json.dumps({"file": a.output, "tasks": inst.n, "features": len(inst.features),
+                          "arcs": len(inst.arcs), "T": a.horizon, "critical_features_cp": crit,
+                          "instance_cp": critical_path(inst, a.speedup)}))
     else:
         for f in a.files:
             res = trickiness(Instance.read(f), a.runs, a.optimum, a.seed)

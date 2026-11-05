@@ -105,3 +105,40 @@ Arquivos `.alb`, o mesmo formato dos data sets de Scholl (1993) e Otto et al. (2
 tasks>`, `<cycle time>`, `<order strength>`, `<task times>`, `<precedence relations>`, `<end>`.
 O comando `dataset` também grava um `index.csv` com parâmetros e medidas de estrutura de cada
 instância.
+
+## Instâncias NRP-S por features (`salbpgen nrps`)
+
+Gera instâncias do NRP-S com **inviabilidade temporal controlada**. A instância é um conjunto de
+features, e cada feature é um grafo do SALBPGen. Pelo menos uma feature é *crítica*: o caminho
+crítico dela é maior que o horizonte T mesmo com todas as tarefas feitas pelo desenvolvedor mais
+rápido, e por isso a feature inteira não cabe em T.
+
+```bash
+salbpgen nrps -n 600 -T 80 --critical 2 --cp-ratio 1.2 --alpha 1 --seed 1 -o inst.nrp
+```
+
+```python
+from salbpgen import FeatureParams, generate_nrps, critical_path
+
+inst = generate_nrps(FeatureParams(n_tasks=600, horizon=80, n_critical=2, cp_ratio=1.2), seed=1)
+inst.write("inst.nrp")          # formato clássico lido por nrp_instance.py + inst.json
+print(critical_path(inst))      # caminho crítico com o desenvolvedor mais rápido
+```
+
+| Elemento | Como é gerado | Calibração |
+|---|---|---|
+| Tamanho das features | lognormal, mediana 6 e p90 23, truncada em [1, 200] | Epics do TAWOS (só backlog) |
+| Duração h_r (períodos, MID) | story points sorteados × `periods_per_sp` | SP das tarefas planejadas em sprints do TAWOS |
+| Feature crítica | `critical_width` tarefas por estágio e K estágios; K cresce até o caminho crítico, Σ ⌈h/speedup⌉, cair em [cp_ratio·T, cp_ratio·T + d), com d = maior duração rápida | fator do experimento |
+| Demais features | SALBPGen com OS `feature_os` (padrão 0.1) | 68% dos epics do TAWOS não têm precedência interna |
+| Arcos entre features | `inter_share` de todos os arcos (padrão 35%), sempre de uma feature anterior para uma posterior | TAWOS |
+| Valor v_r | V_f = esforço_f · U(0,5; 1,5) · `value_scale`, dividido por profundidade: v_r ∝ (prof_r / prof_max)^α | α = 0 é uniforme; α alto concentra o valor no fim da feature |
+
+* O `speedup` padrão (1.4) é o do nível SENIOR em `nrp_instance.py`, onde H = ⌈h / 1.4⌉.
+* Os arcos entre features só podem *aumentar* o caminho crítico da instância. Com T pequeno, uma
+  instância com `cp_ratio < 1` pode ficar com caminho crítico total acima de T. O `.json`
+  registra o caminho crítico da instância e o de cada feature.
+* O arquivo de saída tem um único nível. Cada valor distinto vira um stakeholder com peso igual ao
+  valor, então Σ_s W_s·I_rs = v_r.
+* O leitor `nrp_instance.py` transforma a linha de dependência `a b` em (predecessor, sucessor) =
+  (b, a). O gerador grava os arcos nessa convenção.
