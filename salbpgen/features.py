@@ -104,6 +104,28 @@ class NRPSInstance:
                 "features": [asdict(f) for f in self.features]}
         Path(path).with_suffix(".json").write_text(json.dumps(meta, indent=1))
 
+    @classmethod
+    def read(cls, path: str | Path) -> "NRPSInstance":
+        """Read a classic NRP file (any number of levels) and its ``.json``, if any."""
+        tok = iter(Path(path).read_text().split())
+        durations = []
+        for _ in range(int(next(tok))):
+            durations += [int(next(tok)) for _ in range(int(next(tok)))]
+        deps = [(int(next(tok)), int(next(tok))) for _ in range(int(next(tok)))]
+        values = [0] * len(durations)
+        for _ in range(int(next(tok))):
+            w, k = int(next(tok)), int(next(tok))
+            for _ in range(k):
+                values[int(next(tok)) - 1] += w
+        meta, features, horizon = {}, [], 0
+        side = Path(path).with_suffix(".json")
+        if side.exists():
+            meta = json.loads(side.read_text())
+            features = [Feature(**f) for f in meta.pop("features")]
+            horizon = meta["params"]["horizon"]
+        arcs = [(b - 1, a - 1) for a, b in deps]
+        return cls(durations, values, arcs, features, horizon, meta)
+
 
 def _fast(h: int, speedup: float) -> int:
     return math.ceil(h / speedup)

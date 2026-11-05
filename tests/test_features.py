@@ -76,3 +76,12 @@ def test_write_classic_format(tmp_path):
 def test_too_small_for_critical_features():
     with pytest.raises(ValueError):
         generate_nrps(FeatureParams(5, 160, n_critical=1), seed=0)
+
+
+def test_read_roundtrip(tmp_path):
+    from salbpgen import NRPSInstance
+    inst = generate_nrps(FeatureParams(150, 40), seed=7)
+    inst.write(tmp_path / "y.nrp")
+    back = NRPSInstance.read(tmp_path / "y.nrp")
+    assert (back.durations, back.values, sorted(back.arcs)) == (inst.durations, inst.values, sorted(inst.arcs))
+    assert back.features == inst.features and back.horizon == 40
