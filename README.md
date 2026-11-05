@@ -142,3 +142,16 @@ print(critical_path(inst))      # caminho crítico com o desenvolvedor mais ráp
   valor, então Σ_s W_s·I_rs = v_r.
 * O leitor `nrp_instance.py` transforma a linha de dependência `a b` em (predecessor, sucessor) =
   (b, a). O gerador grava os arcos nessa convenção.
+
+### Visualizador (Streamlit)
+
+```bash
+pip install -e ".[app]"
+streamlit run viewer.py -- instances   # pasta com os .nrp e .json
+```
+
+O app lista as instâncias com os parâmetros do `.json` (tarefas, T, features, críticas, cp_ratio, α,
+CP/T...). Ao clicar numa linha, ele mostra o grafo de uma feature (por padrão, a crítica) ou da
+instância inteira, agrupada por feature. O caminho crítico com o desenvolvedor mais rápido aparece
+em vermelho, os arcos entre features aparecem tracejados, e as tarefas de mais valor ficam mais
+escuras. Acima de 400 nós, o app pede confirmação antes de desenhar.
