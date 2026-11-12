@@ -222,8 +222,8 @@ Com `-n 600 --critical 2 --cp-ratio 1.2 --periods-per-sp 8 --seed 1` (T e h em h
 - **Tamanho das features.** Com 20.000 sorteios, a mediana deu 6 e o p90 23, como o alvo.
 - **Janela de aceitação larga com k = 8.** O CP de uma feature controlada é aceito em
   [ρ·T, ρ·T + d_max), e d_max = ⌈13·8/1,4⌉ = 75 h. Com T = 40, isso permite CP de 48 a 122 h, ou
-  seja, de 1,2 a 3·T, e por isso o ρ efetivo varia muito. **Pendente:** decidir se a janela deve
-  ficar proporcional a T.
+  seja, de 1,2 a 3·T, e por isso o ρ efetivo varia muito. **Decidido (2026-11-12):** a janela fica como
+  está, e o CP real de cada feature é registrado no `.json`.
 - **Features não controladas também passam de T,** e mais ainda com T pequeno (coluna "críticas").
 - **CP da instância.** Os arcos entre features só alongam o CP. O CP da instância fica muito acima de
   ρ·T e precisa ser lido do `.json`.
