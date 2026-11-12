@@ -21,7 +21,7 @@ def test_critical_features_hit_target(T, ratio):
         assert f.critical == (f.critical_path_fast > T)
         cp = fast_cp(inst, f.tasks)
         assert cp == f.critical_path_fast
-        assert ratio * T <= cp < ratio * T + math.ceil(21 / 1.4)
+        assert ratio * T <= cp < ratio * T + math.ceil(13 / 1.4)
     assert critical_path(inst) >= max(f.critical_path_fast for f in crit)
 
 

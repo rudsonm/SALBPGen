@@ -35,9 +35,10 @@ from pathlib import Path
 from .precedence import GraphParams, generate_precedence_graph, os_max, os_min
 
 # TAWOS, planned backlog tasks with 0 < SP <= 100 (n = 8,002); values under 1 SP
-# rounded to 1, values with less than 0.39% of the tasks dropped.
-TAWOS_SP = {1: 16.2, 2: 16.6, 3: 17.4, 4: 10.0, 5: 15.0, 6: 2.8, 8: 12.6, 10: 2.4, 13: 2.9,
-            16: 0.8, 20: 0.5, 21: 0.5}
+# rounded to 1, values with less than 0.39% of the tasks dropped, and SP > 13
+# removed as outliers: 13 is the top of the planning-poker scale used inside a
+# sprint; larger items should be split (Cohn, 2005).
+TAWOS_SP = {1: 16.2, 2: 16.6, 3: 17.4, 4: 10.0, 5: 15.0, 6: 2.8, 8: 12.6, 10: 2.4, 13: 2.9}
 
 
 @dataclass

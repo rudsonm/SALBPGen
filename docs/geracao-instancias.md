@@ -107,7 +107,7 @@ cada feature e o CP da instância.
 1. **Features críticas** (`n_critical`). São `critical_width` tarefas por estágio e K estágios, com
    OS no meio de [OSmin(n, K), OSmax(n, K)] (Teorema 1 de Otto et al., 2013). K começa em
    ⌊ρ·T / d_max⌋ e cresce, com até 50 sorteios por K, até que o CP com o dev mais rápido,
-   Σ⌈h/1,4⌉, caia em [ρ·T, ρ·T + d_max). Aqui d_max é a maior duração rápida (⌈21/1,4⌉ = 15).
+   Σ⌈h/1,4⌉, caia em [ρ·T, ρ·T + d_max). Aqui d_max é a maior duração rápida (⌈13·k/1,4⌉: 10 com k = 1, 75 com k = 8).
 2. **Demais features**. O tamanho vem da lognormal da seção 5.1, e o grafo do SALBPGen com OS
    `feature_os`. O processo para quando a soma chega a |R|.
 3. As features são embaralhadas e os valores distribuídos (5.3).
@@ -168,7 +168,7 @@ GENERATE_NRPS(p, seed):
 
 CRITICAL_FEATURE(p, rng):
     alvo  ← cp_ratio · T
-    d_max ← ⌈max(sp_weights) · periods_per_sp / speedup⌉     // maior duração rápida (15 com k=1; 120 com k=8)
+    d_max ← ⌈max(sp_weights) · periods_per_sp / speedup⌉     // maior duração rápida (10 com k=1; 75 com k=8)
     K     ← max(2, ⌊alvo / d_max⌋)                           // menos estágios não alcança o alvo
     repita até 100 valores de K:
         abaixo ← V
@@ -207,20 +207,26 @@ Observações:
 - **Escrita.** `write` grava cada arco u → v como a linha `v+1 u+1`, para seguir o leitor atual
   `nrp_instance.py` (seção 7). Cada valor distinto vira um stakeholder com peso igual ao valor.
 
-### Verificação (rodada na nuvem em 2026-11-11)
+### Verificação (rodada na nuvem em 2026-11-12)
 
-Com `-n 600 --critical 2 --cp-ratio 1.2 --seed 1`, branch `nrps-features`:
+Com `-n 600 --critical 2 --cp-ratio 1.2 --periods-per-sp 8 --seed 1` (T e h em horas, SP ≤ 13), branch
+`streamlit-viewer`:
 
-| T | Features | Arcos | CP das críticas (rápido) | ρ·T | CP da instância |
-|---|---|---|---|---|---|
-| 40 | 60 | 557 | 49, 49 | 48 | 82 |
-| 80 | 54 | 576 | 97, 98 | 96 | 103 |
-| 120 | 70 | 541 | 151, 148 | 144 | 155 |
-| 160 | 52 | 650 | 196, 192 | 192 | 200 |
+| T | Features | Arcos | CP das controladas (rápido) | ρ·T | Features críticas (CP > T) | CP da instância |
+|---|---|---|---|---|---|---|
+| 40 | 55 | 544 | 104, 58 | 48 | 39 | 449 |
+| 80 | 58 | 539 | 104, 110 | 96 | 17 | 643 |
+| 120 | 53 | 522 | 150, 168 | 144 | 11 | 310 |
+| 160 | 59 | 511 | 208, 220 | 192 | 5 | 365 |
 
-Com 20.000 sorteios, o tamanho das features deu mediana 6 e p90 23, como o alvo. Os arcos entre
-features só alongam o CP: com T = 40 o CP da instância (82) passa bem de ρ·T. Por isso um nível
-`ρ < 1` pode acabar acima de T, e o CP real precisa ser lido do `.json`.
+- **Tamanho das features.** Com 20.000 sorteios, a mediana deu 6 e o p90 23, como o alvo.
+- **Janela de aceitação larga com k = 8.** O CP de uma feature controlada é aceito em
+  [ρ·T, ρ·T + d_max), e d_max = ⌈13·8/1,4⌉ = 75 h. Com T = 40, isso permite CP de 48 a 122 h, ou
+  seja, de 1,2 a 3·T, e por isso o ρ efetivo varia muito. **Pendente:** decidir se a janela deve
+  ficar proporcional a T.
+- **Features não controladas também passam de T,** e mais ainda com T pequeno (coluna "críticas").
+- **CP da instância.** Os arcos entre features só alongam o CP. O CP da instância fica muito acima de
+  ρ·T e precisa ser lido do `.json`.
 
 ## 5. Parâmetros
 
@@ -229,8 +235,8 @@ features só alongam o CP: com T = 40 o CP da instância (82) passa bem de ρ·T
 | Parâmetro | Valor | Referência | Justificativa | Status |
 |---|---|---|---|---|
 | Tamanho das features | lognormal com mediana 6 e p90 23, truncada em [1, 200]; σ = ln(23/6)/1,2816 | TAWOS, tarefas por epic (`tawos-epics.md`) | Feature = Epic. Ajuste pela mediana e pelo p90, e o corte em 200 é o máximo observado. | Implementado. A escolha da família lognormal não foi testada por aderência (KS): **pendente**. |
-| Duração base h_r (SP, dev MID) | distribuição empírica `TAWOS_SP` = {1: 16,2; 2: 16,6; 3: 17,4; 4: 10,0; 5: 15,0; 6: 2,8; 8: 12,6; 10: 2,4; 13: 2,9; 16: 0,8; 20: 0,5; 21: 0,5} (%) | SP das 8.002 planejadas com 0 < SP ≤ 100 | Distribuição real do backlog planejado. SP < 1 é arredondado para 1. Os valores com menos de 0,39% das tarefas são descartados, e o corte fica em 21. | Implementado. O critério de 0,39% não tem justificativa registrada: **pendente**. |
-| Conversão SP → períodos (`periods_per_sp`, inteiro; `HOURS_PER_SP` no notebook) | **T em horas** (decisão de 2026-11-12). Notebook: 8 h por SP. Padrão da biblioteca: 1. | SAFe, *Iteration Planning*: 1 SP normalizado ≈ ½ dia de dev + ½ dia de teste, 8 SP por dev numa iteração de 2 semanas, ou seja, ≈ 1 dia-pessoa = 8 h. Tawosi, Moussa & Sarro (ESEM 2022): SP tem correlação fraca a média com o tempo registrado, e `In_Progress_Time` é o melhor proxy. | Não existe uma conversão média publicada. Os 8 h são uma **convenção** (SAFe), não um valor medido. | Implementado como convenção. **Pendente:** medir no TAWOS (mediana de `In_Progress_Time`/SP por projeto) ou assumir a convenção. Com 8 h/SP e T = 40, cerca de 23% das tarefas têm h > T para um dev MID (SP ≥ 6). |
+| Duração base h_r (SP, dev MID) | distribuição empírica `TAWOS_SP` = {1: 16,2; 2: 16,6; 3: 17,4; 4: 10,0; 5: 15,0; 6: 2,8; 8: 12,6; 10: 2,4; 13: 2,9} (%), renormalizada no sorteio | SP das 8.002 planejadas com 0 < SP ≤ 100; corte de outliers: Cohn (2005), *Agile Estimating and Planning* (a página precisa ser conferida) | Distribuição real do backlog planejado. SP < 1 é arredondado para 1. **Outliers: SP > 13 removidos** (16, 20, 21 e acima, cerca de 1,8% das tarefas; decisão de 2026-11-12). 13 é o topo da escala de planning poker usada dentro de uma sprint, e itens maiores devem ser quebrados. A regra de Tukey (Q3 + 1,5·IQR = 9,5) foi descartada porque, numa distribuição assimétrica, corta a cauda real (≈7%). | Decidido (corte em 13). O descarte de valores intermediários raros (< 0,39%, como 7 e 11) continua sem justificativa: **pendente**. |
+| Conversão SP → períodos (`periods_per_sp`, inteiro; `HOURS_PER_SP` no notebook) | **T em horas** (decisão de 2026-11-12). Notebook: 8 h por SP. Padrão da biblioteca: 1. | SAFe, *Iteration Planning*: 1 SP normalizado ≈ ½ dia de dev + ½ dia de teste, 8 SP por dev numa iteração de 2 semanas, ou seja, ≈ 1 dia-pessoa = 8 h. Tawosi, Moussa & Sarro (ESEM 2022): SP tem correlação fraca a média com o tempo registrado, e `In_Progress_Time` é o melhor proxy. | Não existe uma conversão média publicada. Os 8 h são uma **convenção** (SAFe), não um valor medido. | Implementado como convenção. **Pendente:** medir no TAWOS (mediana de `In_Progress_Time`/SP por projeto) ou assumir a convenção. Com 8 h/SP e T = 40, cerca de 23% das tarefas têm h > T para um dev MID (SP ≥ 6). Com o corte em 13, a maior tarefa tem 104 h (MID). |
 | `feature_os` (features não críticas) | 0,1 | TAWOS: 68% dos epics sem precedência interna | Features reais são rasas. | Implementado. O valor 0,1 **não foi medido**: falta calcular a OS real dos epics (`salbpgen stats` sobre um `.alb` por epic). **Pendente.** |
 | `inter_share` | 0,35 | TAWOS: 35% dos arcos ligam epics diferentes | Calibração direta. | Implementado |
 | Direção dos arcos entre features | da feature anterior para a posterior | — | Garante DAG. Não reflete uma direção observada. | Implementado |
