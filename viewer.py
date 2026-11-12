@@ -111,7 +111,8 @@ for f in files:
     cp = inst.meta.get("critical_path_fast")
     rows.append({
         "instância": f.stem, "tarefas": inst.n, "T": p.get("horizon"), "features": len(inst.features) or None,
-        "críticas": p.get("n_critical"), "cp_ratio": p.get("cp_ratio"), "alpha": p.get("alpha"),
+        "controladas": p.get("n_critical"), "críticas (CP>T)": sum(x.critical for x in inst.features),
+        "cp_ratio": p.get("cp_ratio"), "alpha": p.get("alpha"),
         "feature_os": p.get("feature_os"), "inter_share": p.get("inter_share"), "arcos": len(inst.arcs),
         "CP (rápido)": cp, "CP/T": round(cp / p["horizon"], 2) if cp and p.get("horizon") else None,
         "seed": inst.meta.get("seed"),
@@ -135,7 +136,7 @@ c[3].metric("Horizonte T", inst.horizon or "–")
 c[4].metric("CP (desenv. mais rápido)", inst.meta.get("critical_path_fast", "–"))
 
 if inst.features:
-    ft = pd.DataFrame([{"feature": f"F{i + 1}", "crítica": x.critical, "tarefas": len(x.tasks),
+    ft = pd.DataFrame([{"feature": f"F{i + 1}", "crítica": x.critical, "controlada": x.controlled, "tarefas": len(x.tasks),
                         "CP (rápido)": x.critical_path_fast,
                         "esforço (MID)": sum(inst.durations[r] for r in x.tasks),
                         "valor": sum(inst.values[r] for r in x.tasks)}

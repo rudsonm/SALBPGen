@@ -140,9 +140,10 @@ def main(argv: list[str] | None = None) -> int:
                            periods_per_sp=a.periods_per_sp)
         inst = generate_nrps(fp, a.seed)
         inst.write(a.output)
-        crit = [x.critical_path_fast for x in inst.features if x.critical]
+        ctrl = [x.critical_path_fast for x in inst.features if x.controlled]
         print(json.dumps({"file": a.output, "tasks": inst.n, "features": len(inst.features),
-                          "arcs": len(inst.arcs), "T": a.horizon, "critical_features_cp": crit,
+                          "arcs": len(inst.arcs), "T": a.horizon, "controlled_features_cp": ctrl,
+                          "critical_features": sum(x.critical for x in inst.features),
                           "instance_cp": critical_path(inst, a.speedup)}))
     else:
         for f in a.files:

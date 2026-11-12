@@ -153,7 +153,10 @@ GENERATE_NRPS(p, seed):
         v      += [ max(1, round(V_f · w[r] / Σ w)) para r na feature ]
         h      += dur_f
         A      += { (o+u, o+w) : (u, w) ∈ arcos_f }
-        F.append( tarefas o … o+|dur_f|−1, crit, CP rápido da feature )
+        cp_f ← CP rápido da feature (só arcos internos)
+        F.append( tarefas o … o+|dur_f|−1,
+                  crítica = (cp_f > T),          // qualquer feature cujo CP passe de T
+                  controlada = crit, cp_f )      // gerada para mirar ρ·T
 
     // 4. arcos entre features (35% do total por padrão)
     n_inter ← round( inter_share / (1 − inter_share) · |A| )
@@ -193,6 +196,10 @@ GRAPH(n, OS, rng, K = padrão):
 ```
 
 Observações:
+- **Crítica × controlada.** `n_critical` define quantas features são *controladas*, isto é,
+  construídas para ter CP em [ρ·T, ρ·T + d_max). A marca *crítica* vale para **toda** feature
+  com CP > T, controlada ou não. Por isso o número de críticas é ≥ `n_critical` quando ρ > 1, e
+  com k = 8 e T pequeno é bem maior.
 - **Profundidade dos valores.** A profundidade que define o valor usa só os arcos internos da
   feature. Os arcos entre features, criados depois, não mudam o valor.
 - **CP final.** O CP da instância é recalculado por `critical_path` sobre todos os arcos e gravado

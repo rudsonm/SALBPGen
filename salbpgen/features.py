@@ -2,9 +2,10 @@
 
 An instance is a set of features. Every feature is a precedence graph made by
 SALBPGen; a few random arcs link tasks of different features. Some features
-are *critical*: their critical path is longer than the horizon T even when
-every task is done by the fastest developer, so delivering the whole feature
-within T is impossible (temporal infeasibility).
+are *controlled*: built so that their critical path hits cp_ratio * T. Any
+feature (controlled or not) whose critical path is longer than the horizon T,
+even when every task is done by the fastest developer, is marked *critical*:
+delivering the whole feature within T is impossible (temporal infeasibility).
 
 * **Feature sizes**: lognormal with median 6 and p90 23 tasks, truncated to
   [1, 200] (Epics of TAWOS, backlog tasks only).
@@ -69,8 +70,9 @@ class FeatureParams:
 @dataclass
 class Feature:
     tasks: list[int]  # global 0-indexed task ids
-    critical: bool
+    critical: bool  # critical path (fastest developer) > T, whether controlled or not
     critical_path_fast: int
+    controlled: bool = False  # built by the generator to hit cp_ratio * T
 
 
 @dataclass
@@ -231,7 +233,7 @@ def generate_nrps(p: FeatureParams, seed: int | str | None = None) -> NRPSInstan
         arcs += [(o + u, o + v) for u, v in f_arcs]
         if cp is None:
             cp = max(_longest(len(dur), f_arcs, lambda r: _fast(dur[r], p.speedup))[0])
-        features.append(Feature(list(range(o, o + len(dur))), crit, cp))
+        features.append(Feature(list(range(o, o + len(dur))), cp > p.horizon, cp, controlled=crit))
 
     # arcs between features: earlier feature -> later feature keeps the graph acyclic
     n_inter = round(p.inter_share / (1 - p.inter_share) * len(arcs))
