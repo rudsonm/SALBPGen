@@ -15,12 +15,13 @@ def fast_cp(inst, tasks):
 @pytest.mark.parametrize("T,ratio", [(40, 1.2), (80, 1.5), (120, 0.8)])
 def test_critical_features_hit_target(T, ratio):
     inst = generate_nrps(FeatureParams(400, T, n_critical=2, cp_ratio=ratio), seed=3)
-    crit = [f for f in inst.features if f.critical]
+    crit = [f for f in inst.features if f.controlled]
     assert len(crit) == 2
     for f in crit:
+        assert f.critical == (f.critical_path_fast > T)
         cp = fast_cp(inst, f.tasks)
         assert cp == f.critical_path_fast
-        assert ratio * T <= cp < ratio * T + math.ceil(21 / 1.4)
+        assert ratio * T <= cp < ratio * T + math.ceil(13 / 1.4)
     assert critical_path(inst) >= max(f.critical_path_fast for f in crit)
 
 
@@ -35,7 +36,7 @@ def test_partition_acyclic_and_values():
 
 def test_alpha_puts_value_at_the_end():
     inst = generate_nrps(FeatureParams(200, 40, alpha=3.0), seed=2)
-    f = next(f for f in inst.features if f.critical)
+    f = next(f for f in inst.features if f.controlled)
     idx = {r: k for k, r in enumerate(f.tasks)}
     arcs = [(idx[u], idx[v]) for u, v in inst.arcs if u in idx and v in idx]
     _, depth = _longest(len(f.tasks), arcs, lambda k: 0)
@@ -76,3 +77,27 @@ def test_write_classic_format(tmp_path):
 def test_too_small_for_critical_features():
     with pytest.raises(ValueError):
         generate_nrps(FeatureParams(5, 160, n_critical=1), seed=0)
+
+
+def test_read_roundtrip(tmp_path):
+    from salbpgen import NRPSInstance
+    inst = generate_nrps(FeatureParams(150, 40), seed=7)
+    inst.write(tmp_path / "y.nrp")
+    back = NRPSInstance.read(tmp_path / "y.nrp")
+    assert (back.durations, back.values, sorted(back.arcs)) == (inst.durations, inst.values, sorted(inst.arcs))
+    assert back.features == inst.features and back.horizon == 40
+
+
+def test_periods_per_sp_scales_durations():
+    base = generate_nrps(FeatureParams(n_tasks=120, horizon=40, n_critical=0), seed=3)
+    hours = generate_nrps(FeatureParams(n_tasks=120, horizon=40, n_critical=0, periods_per_sp=8), seed=3)
+    assert hours.durations == [8 * h for h in base.durations]
+    with pytest.raises(ValueError):
+        FeatureParams(n_tasks=120, horizon=40, periods_per_sp=0.5)
+
+
+def test_critical_flag_marks_every_feature_longer_than_T():
+    inst = generate_nrps(FeatureParams(600, 40, n_critical=1, periods_per_sp=8), seed=1)
+    for f in inst.features:
+        assert f.critical == (fast_cp(inst, f.tasks) > 40)
+    assert sum(f.critical for f in inst.features) > sum(f.controlled for f in inst.features)
