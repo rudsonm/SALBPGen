@@ -85,3 +85,11 @@ def test_read_roundtrip(tmp_path):
     back = NRPSInstance.read(tmp_path / "y.nrp")
     assert (back.durations, back.values, sorted(back.arcs)) == (inst.durations, inst.values, sorted(inst.arcs))
     assert back.features == inst.features and back.horizon == 40
+
+
+def test_periods_per_sp_scales_durations():
+    base = generate_nrps(FeatureParams(n_tasks=120, horizon=40, n_critical=0), seed=3)
+    hours = generate_nrps(FeatureParams(n_tasks=120, horizon=40, n_critical=0, periods_per_sp=8), seed=3)
+    assert hours.durations == [8 * h for h in base.durations]
+    with pytest.raises(ValueError):
+        FeatureParams(n_tasks=120, horizon=40, periods_per_sp=0.5)

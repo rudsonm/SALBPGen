@@ -165,7 +165,7 @@ GENERATE_NRPS(p, seed):
 
 CRITICAL_FEATURE(p, rng):
     alvo  ← cp_ratio · T
-    d_max ← ⌈max(sp_weights) · periods_per_sp / speedup⌉     // maior duração rápida (15)
+    d_max ← ⌈max(sp_weights) · periods_per_sp / speedup⌉     // maior duração rápida (15 com k=1; 120 com k=8)
     K     ← max(2, ⌊alvo / d_max⌋)                           // menos estágios não alcança o alvo
     repita até 100 valores de K:
         abaixo ← V
@@ -185,7 +185,7 @@ FEATURE_SIZE(p, rng):
     retornar min(size_max, max(1, round(LogNormal(ln size_median, σ))))
 
 DURATIONS(k, p, rng):
-    retornar [ periods_per_sp · s  para s ~ Categórica(sp_weights), k vezes ]   // SP do TAWOS
+    retornar [ periods_per_sp · s  para s ~ Categórica(sp_weights), k vezes ]   // SP do TAWOS; periods_per_sp inteiro
 
 GRAPH(n, OS, rng, K = padrão):
     se n = 1: retornar ∅
@@ -223,7 +223,7 @@ features só alongam o CP: com T = 40 o CP da instância (82) passa bem de ρ·T
 |---|---|---|---|---|
 | Tamanho das features | lognormal com mediana 6 e p90 23, truncada em [1, 200]; σ = ln(23/6)/1,2816 | TAWOS, tarefas por epic (`tawos-epics.md`) | Feature = Epic. Ajuste pela mediana e pelo p90, e o corte em 200 é o máximo observado. | Implementado. A escolha da família lognormal não foi testada por aderência (KS): **pendente**. |
 | Duração base h_r (SP, dev MID) | distribuição empírica `TAWOS_SP` = {1: 16,2; 2: 16,6; 3: 17,4; 4: 10,0; 5: 15,0; 6: 2,8; 8: 12,6; 10: 2,4; 13: 2,9; 16: 0,8; 20: 0,5; 21: 0,5} (%) | SP das 8.002 planejadas com 0 < SP ≤ 100 | Distribuição real do backlog planejado. SP < 1 é arredondado para 1. Os valores com menos de 0,39% das tarefas são descartados, e o corte fica em 21. | Implementado. O critério de 0,39% não tem justificativa registrada: **pendente**. |
-| Conversão SP → períodos (`periods_per_sp`) | 1 | — | Sem fonte. | **Pendente.** Falta definir a unidade do período e quantos períodos vale 1 SP. A proposta em `SALBPGen/docs/nrp-s-geracao-de-instancias.md` é fixar o período (hora ou meio dia) e derivar T da duração do sprint. |
+| Conversão SP → períodos (`periods_per_sp`, inteiro; `HOURS_PER_SP` no notebook) | **T em horas** (decisão de 2026-11-12). Notebook: 8 h por SP. Padrão da biblioteca: 1. | SAFe, *Iteration Planning*: 1 SP normalizado ≈ ½ dia de dev + ½ dia de teste, 8 SP por dev numa iteração de 2 semanas, ou seja, ≈ 1 dia-pessoa = 8 h. Tawosi, Moussa & Sarro (ESEM 2022): SP tem correlação fraca a média com o tempo registrado, e `In_Progress_Time` é o melhor proxy. | Não existe uma conversão média publicada. Os 8 h são uma **convenção** (SAFe), não um valor medido. | Implementado como convenção. **Pendente:** medir no TAWOS (mediana de `In_Progress_Time`/SP por projeto) ou assumir a convenção. Com 8 h/SP e T = 40, cerca de 23% das tarefas têm h > T para um dev MID (SP ≥ 6). |
 | `feature_os` (features não críticas) | 0,1 | TAWOS: 68% dos epics sem precedência interna | Features reais são rasas. | Implementado. O valor 0,1 **não foi medido**: falta calcular a OS real dos epics (`salbpgen stats` sobre um `.alb` por epic). **Pendente.** |
 | `inter_share` | 0,35 | TAWOS: 35% dos arcos ligam epics diferentes | Calibração direta. | Implementado |
 | Direção dos arcos entre features | da feature anterior para a posterior | — | Garante DAG. Não reflete uma direção observada. | Implementado |

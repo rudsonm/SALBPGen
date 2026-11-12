@@ -128,7 +128,7 @@ print(critical_path(inst))      # caminho crítico com o desenvolvedor mais ráp
 | Elemento | Como é gerado | Calibração |
 |---|---|---|
 | Tamanho das features | lognormal, mediana 6 e p90 23, truncada em [1, 200] | Epics do TAWOS (só backlog) |
-| Duração h_r (períodos, MID) | story points sorteados × `periods_per_sp` | SP das tarefas planejadas em sprints do TAWOS |
+| Duração h_r (períodos, MID) | story points sorteados × `periods_per_sp` (inteiro: períodos de T por SP) | SP das tarefas planejadas em sprints do TAWOS |
 | Feature crítica | `critical_width` tarefas por estágio e K estágios; K cresce até o caminho crítico, Σ ⌈h/speedup⌉, cair em [cp_ratio·T, cp_ratio·T + d), com d = maior duração rápida | fator do experimento |
 | Demais features | SALBPGen com OS `feature_os` (padrão 0.1) | 68% dos epics do TAWOS não têm precedência interna |
 | Arcos entre features | `inter_share` de todos os arcos (padrão 35%), sempre de uma feature anterior para uma posterior | TAWOS |

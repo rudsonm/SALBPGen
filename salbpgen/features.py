@@ -9,7 +9,7 @@ within T is impossible (temporal infeasibility).
 * **Feature sizes**: lognormal with median 6 and p90 23 tasks, truncated to
   [1, 200] (Epics of TAWOS, backlog tasks only).
 * **Durations** (periods, MID developer): story points of TAWOS tasks planned
-  in sprints, times ``periods_per_sp``.
+  in sprints, times ``periods_per_sp`` (integer periods of T per SP).
 * **Critical features**: ``n_stages = K`` and ``critical_width`` tasks per
   stage, so a longest path has exactly K tasks. K grows (and graphs are
   resampled) until the critical path with the fastest developer, the sum of
@@ -54,12 +54,14 @@ class FeatureParams:
     inter_share: float = 0.35
     alpha: float = 1.0
     value_scale: int = 10
-    periods_per_sp: int = 1
+    periods_per_sp: int = 1  # periods of T (e.g. hours) per story point
     sp_weights: dict = field(default_factory=lambda: dict(TAWOS_SP))
 
     def __post_init__(self):
         if self.n_tasks < 1 or self.horizon < 1:
             raise ValueError("n_tasks and horizon must be positive")
+        if not isinstance(self.periods_per_sp, int) or self.periods_per_sp < 1:
+            raise ValueError("periods_per_sp must be a positive integer")
         if not 0 <= self.inter_share < 1:
             raise ValueError("inter_share must be in [0, 1)")
 
@@ -166,9 +168,13 @@ def _feature_size(p: FeatureParams, rng: random.Random) -> int:
     return min(p.size_max, max(1, round(rng.lognormvariate(math.log(p.size_median), sigma))))
 
 
+def _sp_to_periods(sp: float, p: FeatureParams) -> int:
+    return sp * p.periods_per_sp
+
+
 def _durations(k: int, p: FeatureParams, rng: random.Random) -> list[int]:
     sp = rng.choices(list(p.sp_weights), list(p.sp_weights.values()), k=k)
-    return [s * p.periods_per_sp for s in sp]
+    return [_sp_to_periods(s, p) for s in sp]
 
 
 def _graph(n: int, os_: float, rng: random.Random, n_stages: int | None = None) -> list[tuple[int, int]]:
@@ -181,7 +187,7 @@ def _graph(n: int, os_: float, rng: random.Random, n_stages: int | None = None) 
 def _critical_feature(p: FeatureParams, rng: random.Random):
     target = p.cp_ratio * p.horizon
     # a path of K tasks is at most K * max_fast long, so smaller K cannot reach the target
-    max_fast = _fast(max(p.sp_weights) * p.periods_per_sp, p.speedup)
+    max_fast = _fast(_sp_to_periods(max(p.sp_weights), p), p.speedup)
     K = max(2, math.floor(target / max_fast))
     for _ in range(100):  # values of K
         below = True
