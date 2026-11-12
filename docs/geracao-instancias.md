@@ -114,6 +114,92 @@ cada feature e o CP da instância.
 4. **Arcos entre features**: `inter_share/(1 − inter_share)` × (arcos internos), sempre de uma
    feature anterior para uma posterior, o que mantém o DAG.
 
+### Pseudocódigo de `generate_nrps`
+
+Transcrição de `salbpgen/features.py` (branch `nrps-features` / `streamlit-viewer`). A notação
+⌈h/s⌉ é a duração com o dev mais rápido (s = `speedup`).
+
+```text
+Entrada: p = (n_tasks, T, n_critical, cp_ratio, speedup, critical_width, feature_os,
+              size_median, size_p90, size_max, inter_share, alpha, value_scale,
+              periods_per_sp, sp_weights), seed
+Saída:   durações h[r], valores v[r], arcos A, features F
+
+GENERATE_NRPS(p, seed):
+    rng ← Random(seed)
+    blocos ← []
+    // 1. features críticas
+    repita n_critical vezes:
+        blocos.append( (crítica = V, CRITICAL_FEATURE(p, rng)) )
+    usadas ← Σ |tarefas dos blocos|
+    se usadas > n_tasks: erro "critical features need … tasks"
+
+    // 2. demais features, até completar n_tasks
+    enquanto usadas < n_tasks:
+        k ← min(FEATURE_SIZE(p, rng), n_tasks − usadas)
+        arcos ← GRAPH(k, feature_os, rng)                    // SALBPGen, K padrão
+        dur   ← DURATIONS(k, p, rng)
+        blocos.append( (crítica = F, arcos, dur) )
+        usadas ← usadas + k
+    embaralhar(blocos)
+
+    // 3. concatenar as features e distribuir o valor por profundidade
+    h, v, A, F ← [], [], [], []
+    para cada (crit, arcos_f, dur_f) em blocos:
+        o ← |h|                                              // deslocamento dos ids
+        prof[r] ← nº de tarefas do maior caminho que termina em r, dentro da feature
+        w[r]    ← (prof[r] / max prof) ^ alpha
+        V_f     ← Σ dur_f · U(0,5; 1,5) · value_scale
+        v      += [ max(1, round(V_f · w[r] / Σ w)) para r na feature ]
+        h      += dur_f
+        A      += { (o+u, o+w) : (u, w) ∈ arcos_f }
+        F.append( tarefas o … o+|dur_f|−1, crit, CP rápido da feature )
+
+    // 4. arcos entre features (35% do total por padrão)
+    n_inter ← round( inter_share / (1 − inter_share) · |A| )
+    repita até n_inter arcos novos ou 100·n_inter tentativas:
+        (a, b) ← dois índices de feature distintos, com a < b
+        e ← (tarefa aleatória de F[a], tarefa aleatória de F[b])   // anterior → posterior: DAG
+        se e ∉ A: A.append(e)
+    retornar (h, v, A, F)
+
+CRITICAL_FEATURE(p, rng):
+    alvo  ← cp_ratio · T
+    d_max ← ⌈max(sp_weights) · periods_per_sp / speedup⌉     // maior duração rápida (15)
+    K     ← max(2, ⌊alvo / d_max⌋)                           // menos estágios não alcança o alvo
+    repita até 100 valores de K:
+        abaixo ← V
+        repita 50 vezes:
+            n     ← K · critical_width
+            OS    ← (OSmin(n, K) + OSmax(n, K)) / 2          // Otto et al. (2013), Teorema 1
+            arcos ← GRAPH(n, OS, rng, K estágios)
+            dur   ← DURATIONS(n, p, rng)
+            cp    ← maior Σ ⌈dur[r]/speedup⌉ ao longo de um caminho
+            se alvo ≤ cp < alvo + d_max: retornar (arcos, dur, cp)
+            abaixo ← abaixo e (cp < alvo)
+        se abaixo: K ← K + 1                                 // todos curtos demais: aprofundar
+    erro "no critical feature with critical path in [alvo, alvo + d_max)"
+
+FEATURE_SIZE(p, rng):
+    σ ← ln(size_p90 / size_median) / 1,2816                  // 1,2816 = z do p90
+    retornar min(size_max, max(1, round(LogNormal(ln size_median, σ))))
+
+DURATIONS(k, p, rng):
+    retornar [ periods_per_sp · s  para s ~ Categórica(sp_weights), k vezes ]   // SP do TAWOS
+
+GRAPH(n, OS, rng, K = padrão):
+    se n = 1: retornar ∅
+    retornar arcos de generate_precedence_graph(n, OS, K)    // gerador SALBPGen, Seção 5.1
+```
+
+Observações:
+- **Profundidade dos valores.** A profundidade que define o valor usa só os arcos internos da
+  feature. Os arcos entre features, criados depois, não mudam o valor.
+- **CP final.** O CP da instância é recalculado por `critical_path` sobre todos os arcos e gravado
+  no `.json`. Ele pode passar de cp_ratio·T por causa dos arcos entre features.
+- **Escrita.** `write` grava cada arco u → v como a linha `v+1 u+1`, para seguir o leitor atual
+  `nrp_instance.py` (seção 7). Cada valor distinto vira um stakeholder com peso igual ao valor.
+
 ### Verificação (rodada na nuvem em 2026-11-11)
 
 Com `-n 600 --critical 2 --cp-ratio 1.2 --seed 1`, branch `nrps-features`:
