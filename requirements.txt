@@ -1,0 +1,6 @@
+# Instalação: pip install -r requirements.txt
+-e .                 # o próprio salbpgen (só biblioteca padrão)
+streamlit>=1.35      # viewer.py
+pandas>=2.0          # viewer.py e gerar_instancias.ipynb
+jupyter>=1.0         # gerar_instancias.ipynb
+pytest>=7.0          # testes
