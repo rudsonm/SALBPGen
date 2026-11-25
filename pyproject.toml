@@ -12,9 +12,13 @@ dependencies = []
 
 [project.optional-dependencies]
 dev = ["pytest"]
+app = ["streamlit>=1.35"]
 
 [project.scripts]
 salbpgen = "salbpgen.cli:main"
 
 [tool.setuptools]
 packages = ["salbpgen"]
+
+[tool.setuptools.package-data]
+salbpgen = ["data_tawos_epics.json"]

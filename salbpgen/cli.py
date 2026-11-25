@@ -105,7 +105,8 @@ def main(argv: list[str] | None = None) -> int:
     f.add_argument("--feature-os", type=float, default=0.1, help="order strength of the other features")
     f.add_argument("--inter-share", type=float, default=0.35, help="share of arcs between features")
     f.add_argument("--alpha", type=float, default=1.0, help="value by depth: 0 uniform, high = last tasks")
-    f.add_argument("--periods-per-sp", type=int, default=1)
+    f.add_argument("--periods-per-sp", type=int, default=1,
+                   help="periods of T per story point (integer), e.g. 8 when T is in hours and 1 SP = 1 day")
     f.add_argument("--seed", default=None)
     f.add_argument("-o", "--output", required=True, help="output file (classic NRP format) + .json")
 
@@ -139,9 +140,10 @@ def main(argv: list[str] | None = None) -> int:
                            periods_per_sp=a.periods_per_sp)
         inst = generate_nrps(fp, a.seed)
         inst.write(a.output)
-        crit = [x.critical_path_fast for x in inst.features if x.critical]
+        ctrl = [x.critical_path_fast for x in inst.features if x.controlled]
         print(json.dumps({"file": a.output, "tasks": inst.n, "features": len(inst.features),
-                          "arcs": len(inst.arcs), "T": a.horizon, "critical_features_cp": crit,
+                          "arcs": len(inst.arcs), "T": a.horizon, "controlled_features_cp": ctrl,
+                          "critical_features": sum(x.critical for x in inst.features),
                           "instance_cp": critical_path(inst, a.speedup)}))
     else:
         for f in a.files:

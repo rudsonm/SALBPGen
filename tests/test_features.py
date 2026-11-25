@@ -15,12 +15,13 @@ def fast_cp(inst, tasks):
 @pytest.mark.parametrize("T,ratio", [(40, 1.2), (80, 1.5), (120, 0.8)])
 def test_critical_features_hit_target(T, ratio):
     inst = generate_nrps(FeatureParams(400, T, n_critical=2, cp_ratio=ratio), seed=3)
-    crit = [f for f in inst.features if f.critical]
+    crit = [f for f in inst.features if f.controlled]
     assert len(crit) == 2
     for f in crit:
+        assert f.critical == (f.critical_path_fast > T)
         cp = fast_cp(inst, f.tasks)
         assert cp == f.critical_path_fast
-        assert ratio * T <= cp < ratio * T + math.ceil(21 / 1.4)
+        assert ratio * T <= cp < ratio * T + math.ceil(13 / 1.4)
     assert critical_path(inst) >= max(f.critical_path_fast for f in crit)
 
 
@@ -35,7 +36,7 @@ def test_partition_acyclic_and_values():
 
 def test_alpha_puts_value_at_the_end():
     inst = generate_nrps(FeatureParams(200, 40, alpha=3.0), seed=2)
-    f = next(f for f in inst.features if f.critical)
+    f = next(f for f in inst.features if f.controlled)
     idx = {r: k for k, r in enumerate(f.tasks)}
     arcs = [(idx[u], idx[v]) for u, v in inst.arcs if u in idx and v in idx]
     _, depth = _longest(len(f.tasks), arcs, lambda k: 0)
@@ -76,3 +77,89 @@ def test_write_classic_format(tmp_path):
 def test_too_small_for_critical_features():
     with pytest.raises(ValueError):
         generate_nrps(FeatureParams(5, 160, n_critical=1), seed=0)
+
+
+def test_read_roundtrip(tmp_path):
+    from salbpgen import NRPSInstance
+    inst = generate_nrps(FeatureParams(150, 40), seed=7)
+    inst.write(tmp_path / "y.nrp")
+    back = NRPSInstance.read(tmp_path / "y.nrp")
+    assert (back.durations, back.values, sorted(back.arcs)) == (inst.durations, inst.values, sorted(inst.arcs))
+    assert back.features == inst.features and back.horizon == 40
+
+
+def test_periods_per_sp_scales_durations():
+    base = generate_nrps(FeatureParams(n_tasks=120, horizon=40, n_critical=0), seed=3)
+    hours = generate_nrps(FeatureParams(n_tasks=120, horizon=40, n_critical=0, periods_per_sp=8), seed=3)
+    assert hours.durations == [8 * h for h in base.durations]
+    with pytest.raises(ValueError):
+        FeatureParams(n_tasks=120, horizon=40, periods_per_sp=0.5)
+
+
+def test_critical_flag_marks_every_feature_longer_than_T():
+    inst = generate_nrps(FeatureParams(600, 40, n_critical=1, periods_per_sp=8), seed=1)
+    for f in inst.features:
+        assert f.critical == (fast_cp(inst, f.tasks) > 40)
+    assert sum(f.critical for f in inst.features) > sum(f.controlled for f in inst.features)
+
+
+def test_value_mode_uncorrelated_breaks_value_effort_link():
+    import statistics
+    from salbpgen.features import FeatureParams, generate_nrps
+
+    def corr(inst):
+        # per feature: value vs effort relative to size (both scale with the number of tasks)
+        eff = [sum(inst.durations[r] for r in f.tasks) / len(f.tasks) for f in inst.features]
+        val = [sum(inst.values[r] for r in f.tasks) / len(f.tasks) for f in inst.features]
+        return statistics.correlation(eff, val)
+
+    base = dict(n_tasks=600, horizon=160, n_critical=1, alpha=0.0, periods_per_sp=1)
+    c = corr(generate_nrps(FeatureParams(**base), seed=3))
+    u = corr(generate_nrps(FeatureParams(**base, value_mode="uncorrelated"), seed=3))
+    assert c > 0.5 and abs(u) < 0.3
+
+
+def test_feature_pool_tawos_copies_real_epics():
+    from salbpgen.features import FeatureParams, _tawos_epics, generate_nrps
+
+    inst = generate_nrps(FeatureParams(n_tasks=500, horizon=160, n_critical=1, feature_pool="tawos"), seed=7)
+    shapes = {(e[0], tuple(map(tuple, e[1]))) for e in _tawos_epics()}
+    arcs = set(inst.arcs)
+    assert inst.n == 500
+    for f in inst.features:
+        if f.controlled:
+            continue
+        pos = {t: i for i, t in enumerate(f.tasks)}
+        local = tuple(sorted((pos[u], pos[v]) for u, v in arcs if u in pos and v in pos))
+        assert (len(f.tasks), local) in shapes
+
+
+def test_clients_ask_for_features_and_set_values():
+    from salbpgen.features import FeatureParams, generate_nrps
+
+    p = FeatureParams(n_tasks=300, horizon=160, n_critical=2, clients=True, feature_pool="tawos")
+    inst = generate_nrps(p, seed=5)
+    clients = inst.meta["clients"]
+    nf = len(inst.features)
+    assert len(clients) == max(1, round(2.0 * nf / 3))
+    demand = [0] * nf
+    for c in clients:
+        assert 1 <= c["weight"] <= 5
+        for f, imp in c["requests"]:
+            assert 0 <= f < nf and 1 <= imp <= 5
+            demand[f] += c["weight"] * imp
+    for f, feat in enumerate(inst.features):
+        total = sum(inst.values[r] for r in feat.tasks)
+        if feat.controlled:
+            assert demand[f] > 0 and total > 0
+        if demand[f] == 0:
+            assert total == 0
+    # same params and seed -> same instance
+    assert generate_nrps(p, seed=5).values == inst.values
+
+
+def test_without_clients_values_unchanged():
+    from salbpgen.features import FeatureParams, generate_nrps
+
+    inst = generate_nrps(FeatureParams(n_tasks=200, horizon=160, n_critical=1), seed=11)
+    assert "clients" not in inst.meta and min(inst.values) >= 1
