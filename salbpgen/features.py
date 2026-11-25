@@ -8,7 +8,9 @@ even when every task is done by the fastest developer, is marked *critical*:
 delivering the whole feature within T is impossible (temporal infeasibility).
 
 * **Feature sizes**: lognormal with median 6 and p90 23 tasks, truncated to
-  [1, 200] (Epics of TAWOS, backlog tasks only).
+  [1, 200] (Epics of TAWOS, backlog tasks only). With ``feature_pool="tawos"``,
+  each non-controlled feature copies the size and internal arcs of an epic
+  drawn at random from TAWOS (``data_tawos_epics.json``).
 * **Durations** (periods, MID developer): story points of TAWOS tasks planned
   in sprints, times ``periods_per_sp`` (integer periods of T per SP).
 * **Critical features**: ``n_stages = K`` and ``critical_width`` tasks per
@@ -19,7 +21,8 @@ delivering the whole feature within T is impossible (temporal infeasibility).
   the critical path of the instance longer.
 * **Links between features**: ``inter_share`` of all arcs (35% in TAWOS),
   always from an earlier to a later feature, so the graph stays acyclic.
-* **Value**: feature f gets V_f = effort_f * U(0.5, 1.5) * value_scale,
+* **Value**: feature f gets V_f = effort_f * U(0.5, 1.5) * value_scale
+  (``value_mode="uncorrelated"``: |f| * mean duration instead of effort_f),
   split over its tasks by depth: v_r proportional to (depth_r / depth_max)^alpha.
   alpha = 0 is uniform; a large alpha puts the value on the last tasks.
 """
@@ -29,6 +32,7 @@ from __future__ import annotations
 import json
 import math
 import random
+from functools import lru_cache
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
@@ -56,6 +60,13 @@ class FeatureParams:
     inter_share: float = 0.35
     alpha: float = 1.0
     value_scale: int = 10
+    # "correlated": V_f = effort_f * U(0.5, 1.5); "uncorrelated": V_f = |f| * mean
+    # duration * U(0.5, 1.5), so a task's value does not depend on its duration
+    # (Pisinger, 2005: uncorrelated vs correlated knapsack instances)
+    value_mode: str = "correlated"
+    # non-controlled features: None = SALBPGen graph with feature_os and lognormal size;
+    # "tawos" = size and internal arcs of an epic drawn at random from TAWOS (bootstrap)
+    feature_pool: str | None = None
     periods_per_sp: int = 1  # periods of T (e.g. hours) per story point
     sp_weights: dict = field(default_factory=lambda: dict(TAWOS_SP))
 
@@ -66,6 +77,10 @@ class FeatureParams:
             raise ValueError("periods_per_sp must be a positive integer")
         if not 0 <= self.inter_share < 1:
             raise ValueError("inter_share must be in [0, 1)")
+        if self.feature_pool not in (None, "tawos"):
+            raise ValueError("feature_pool must be None or 'tawos'")
+        if self.value_mode not in ("correlated", "uncorrelated"):
+            raise ValueError("value_mode must be 'correlated' or 'uncorrelated'")
 
 
 @dataclass
@@ -166,6 +181,12 @@ def critical_path(inst: NRPSInstance, speedup: float = 1.4) -> int:
     return max(_longest(inst.n, inst.arcs, lambda r: _fast(inst.durations[r], speedup))[0], default=0)
 
 
+@lru_cache(maxsize=1)
+def _tawos_epics() -> list:
+    """Epics of TAWOS backlog tasks: [size, [[u, v], ...]] (see data_tawos_epics.json)."""
+    return json.loads((Path(__file__).parent / "data_tawos_epics.json").read_text())["epics"]
+
+
 def _feature_size(p: FeatureParams, rng: random.Random) -> int:
     sigma = math.log(p.size_p90 / p.size_median) / 1.2816
     return min(p.size_max, max(1, round(rng.lognormvariate(math.log(p.size_median), sigma))))
@@ -173,6 +194,11 @@ def _feature_size(p: FeatureParams, rng: random.Random) -> int:
 
 def _sp_to_periods(sp: float, p: FeatureParams) -> int:
     return sp * p.periods_per_sp
+
+
+def _mean_duration(p: FeatureParams) -> float:
+    total = sum(p.sp_weights.values())
+    return sum(_sp_to_periods(s, p) * w for s, w in p.sp_weights.items()) / total
 
 
 def _durations(k: int, p: FeatureParams, rng: random.Random) -> list[int]:
@@ -215,9 +241,15 @@ def generate_nrps(p: FeatureParams, seed: int | str | None = None) -> NRPSInstan
     used = sum(len(d) for _, _, d, _ in blocks)
     if used > p.n_tasks:
         raise ValueError(f"critical features need {used} tasks, more than n_tasks={p.n_tasks}")
+    pool = _tawos_epics() if p.feature_pool == "tawos" else None
     while used < p.n_tasks:
-        k = min(_feature_size(p, rng), p.n_tasks - used)
-        arcs = _graph(k, p.feature_os, rng)
+        if pool:
+            fits = [e for e in pool if e[0] <= p.n_tasks - used]
+            k, arcs = rng.choice(fits)
+            arcs = [tuple(a) for a in arcs]
+        else:
+            k = min(_feature_size(p, rng), p.n_tasks - used)
+            arcs = _graph(k, p.feature_os, rng)
         dur = _durations(k, p, rng)
         blocks.append((False, arcs, dur, None))
         used += k
@@ -228,7 +260,8 @@ def generate_nrps(p: FeatureParams, seed: int | str | None = None) -> NRPSInstan
         o = len(durations)
         _, depth = _longest(len(dur), f_arcs, lambda r: 0)
         weights = [(d / max(depth)) ** p.alpha for d in depth]
-        V = sum(dur) * rng.uniform(0.5, 1.5) * p.value_scale
+        effort = sum(dur) if p.value_mode == "correlated" else len(dur) * _mean_duration(p)
+        V = effort * rng.uniform(0.5, 1.5) * p.value_scale
         values += [max(1, round(V * w / sum(weights))) for w in weights]
         durations += dur
         arcs += [(o + u, o + v) for u, v in f_arcs]
