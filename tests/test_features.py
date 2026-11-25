@@ -132,3 +132,34 @@ def test_feature_pool_tawos_copies_real_epics():
         pos = {t: i for i, t in enumerate(f.tasks)}
         local = tuple(sorted((pos[u], pos[v]) for u, v in arcs if u in pos and v in pos))
         assert (len(f.tasks), local) in shapes
+
+
+def test_clients_ask_for_features_and_set_values():
+    from salbpgen.features import FeatureParams, generate_nrps
+
+    p = FeatureParams(n_tasks=300, horizon=160, n_critical=2, clients=True, feature_pool="tawos")
+    inst = generate_nrps(p, seed=5)
+    clients = inst.meta["clients"]
+    nf = len(inst.features)
+    assert len(clients) == max(1, round(2.0 * nf / 3))
+    demand = [0] * nf
+    for c in clients:
+        assert 1 <= c["weight"] <= 5
+        for f, imp in c["requests"]:
+            assert 0 <= f < nf and 1 <= imp <= 5
+            demand[f] += c["weight"] * imp
+    for f, feat in enumerate(inst.features):
+        total = sum(inst.values[r] for r in feat.tasks)
+        if feat.controlled:
+            assert demand[f] > 0 and total > 0
+        if demand[f] == 0:
+            assert total == 0
+    # same params and seed -> same instance
+    assert generate_nrps(p, seed=5).values == inst.values
+
+
+def test_without_clients_values_unchanged():
+    from salbpgen.features import FeatureParams, generate_nrps
+
+    inst = generate_nrps(FeatureParams(n_tasks=200, horizon=160, n_critical=1), seed=11)
+    assert "clients" not in inst.meta and min(inst.values) >= 1
