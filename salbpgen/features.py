@@ -67,6 +67,12 @@ class FeatureParams:
     # non-controlled features: None = SALBPGen graph with feature_os and lognormal size;
     # "tawos" = size and internal arcs of an epic drawn at random from TAWOS (bootstrap)
     feature_pool: str | None = None
+    # clients ask for features (option A): each client has weight U{1..5} and asks for
+    # U{1..5} features with importance U{1..5}; |S| = round(coverage * |F| / 3) so a
+    # feature gets `coverage` clients on average; every controlled feature gets >= 1.
+    # The feature value is effort_f (or |f| * mean duration) * demand_f / mean demand.
+    clients: bool = False
+    client_coverage: float = 2.0
     periods_per_sp: int = 1  # periods of T (e.g. hours) per story point
     sp_weights: dict = field(default_factory=lambda: dict(TAWOS_SP))
 
@@ -255,14 +261,12 @@ def generate_nrps(p: FeatureParams, seed: int | str | None = None) -> NRPSInstan
         used += k
     rng.shuffle(blocks)
 
+    clients, demand = (_clients(len(blocks), [b[0] for b in blocks], p, rng) if p.clients
+                       else (None, None))
     durations, values, arcs, features = [], [], [], []
-    for crit, f_arcs, dur, cp in blocks:
+    for i, (crit, f_arcs, dur, cp) in enumerate(blocks):
         o = len(durations)
-        _, depth = _longest(len(dur), f_arcs, lambda r: 0)
-        weights = [(d / max(depth)) ** p.alpha for d in depth]
-        effort = sum(dur) if p.value_mode == "correlated" else len(dur) * _mean_duration(p)
-        V = effort * rng.uniform(0.5, 1.5) * p.value_scale
-        values += [max(1, round(V * w / sum(weights))) for w in weights]
+        values += feature_values(dur, f_arcs, p, rng, None if demand is None else demand[i])
         durations += dur
         arcs += [(o + u, o + v) for u, v in f_arcs]
         if cp is None:
@@ -282,5 +286,50 @@ def generate_nrps(p: FeatureParams, seed: int | str | None = None) -> NRPSInstan
             arcs.append(e)
             n_inter -= 1
 
-    return NRPSInstance(durations, values, arcs, features, p.horizon,
-                        meta={"seed": seed, "params": asdict(p)})
+    meta = {"seed": seed, "params": asdict(p)}
+    if clients is not None:
+        meta["clients"] = clients  # [{"weight": W_s, "requests": [[feature index, importance], ...]}]
+    return NRPSInstance(durations, values, arcs, features, p.horizon, meta=meta)
+
+
+def _clients(n_features: int, controlled: list[bool], p: FeatureParams, rng: random.Random):
+    """Clients and the demand of each feature, sum of W_s * importance (option A)."""
+    n_clients = max(1, round(p.client_coverage * n_features / 3))  # E[requests per client] = 3
+    clients = []
+    for _ in range(n_clients):
+        k = min(rng.randint(1, 5), n_features)
+        clients.append({"weight": rng.randint(1, 5),
+                        "requests": [[f, rng.randint(1, 5)] for f in sorted(rng.sample(range(n_features), k))]})
+    asked = {f for c in clients for f, _ in c["requests"]}
+    for f in range(n_features):  # a controlled feature with no client would be worth 0
+        if controlled[f] and f not in asked:
+            c = rng.choice(clients)
+            c["requests"] = sorted(c["requests"] + [[f, rng.randint(1, 5)]])
+    demand = [0.0] * n_features
+    for c in clients:
+        for f, imp in c["requests"]:
+            demand[f] += c["weight"] * imp
+    return clients, demand
+
+
+def feature_values(dur: list[int], arcs, p: FeatureParams, rng: random.Random,
+                   demand: float | None = None, mean_demand: float | None = None) -> list[int]:
+    """Values of the tasks of one feature: V_f split by depth, v_r ~ (depth_r / max)^alpha.
+
+    Without clients V_f = effort * U(0.5, 1.5) * value_scale (effort = sum of durations,
+    or |f| * mean duration when uncorrelated). With clients the random factor is replaced
+    by demand_f / expected demand (``_mean_demand``), the same constant for every instance.
+    """
+    _, depth = _longest(len(dur), arcs, lambda r: 0)
+    weights = [(d / max(depth)) ** p.alpha for d in depth]
+    effort = sum(dur) if p.value_mode == "correlated" else len(dur) * _mean_duration(p)
+    if demand is None:
+        V = effort * rng.uniform(0.5, 1.5) * p.value_scale
+        return [max(1, round(V * w / sum(weights))) for w in weights]
+    V = effort * demand / (mean_demand or _mean_demand(p)) * p.value_scale
+    return [round(V * w / sum(weights)) for w in weights]  # demand 0 -> value 0
+
+
+def _mean_demand(p: FeatureParams) -> float:
+    """Expected demand of a feature: coverage clients, each W * importance with mean 3 * 3."""
+    return p.client_coverage * 9.0
