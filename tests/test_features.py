@@ -101,3 +101,34 @@ def test_critical_flag_marks_every_feature_longer_than_T():
     for f in inst.features:
         assert f.critical == (fast_cp(inst, f.tasks) > 40)
     assert sum(f.critical for f in inst.features) > sum(f.controlled for f in inst.features)
+
+
+def test_value_mode_uncorrelated_breaks_value_effort_link():
+    import statistics
+    from salbpgen.features import FeatureParams, generate_nrps
+
+    def corr(inst):
+        # per feature: value vs effort relative to size (both scale with the number of tasks)
+        eff = [sum(inst.durations[r] for r in f.tasks) / len(f.tasks) for f in inst.features]
+        val = [sum(inst.values[r] for r in f.tasks) / len(f.tasks) for f in inst.features]
+        return statistics.correlation(eff, val)
+
+    base = dict(n_tasks=600, horizon=160, n_critical=1, alpha=0.0, periods_per_sp=1)
+    c = corr(generate_nrps(FeatureParams(**base), seed=3))
+    u = corr(generate_nrps(FeatureParams(**base, value_mode="uncorrelated"), seed=3))
+    assert c > 0.5 and abs(u) < 0.3
+
+
+def test_feature_pool_tawos_copies_real_epics():
+    from salbpgen.features import FeatureParams, _tawos_epics, generate_nrps
+
+    inst = generate_nrps(FeatureParams(n_tasks=500, horizon=160, n_critical=1, feature_pool="tawos"), seed=7)
+    shapes = {(e[0], tuple(map(tuple, e[1]))) for e in _tawos_epics()}
+    arcs = set(inst.arcs)
+    assert inst.n == 500
+    for f in inst.features:
+        if f.controlled:
+            continue
+        pos = {t: i for i, t in enumerate(f.tasks)}
+        local = tuple(sorted((pos[u], pos[v]) for u, v in arcs if u in pos and v in pos))
+        assert (len(f.tasks), local) in shapes

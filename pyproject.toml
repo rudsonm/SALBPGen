@@ -19,3 +19,6 @@ salbpgen = "salbpgen.cli:main"
 
 [tool.setuptools]
 packages = ["salbpgen"]
+
+[tool.setuptools.package-data]
+salbpgen = ["data_tawos_epics.json"]
