@@ -163,3 +163,14 @@ def test_without_clients_values_unchanged():
 
     inst = generate_nrps(FeatureParams(n_tasks=200, horizon=160, n_critical=1), seed=11)
     assert "clients" not in inst.meta and min(inst.values) >= 1
+
+
+def test_fixed_number_of_clients():
+    from salbpgen.features import FeatureParams, generate_nrps
+
+    p = FeatureParams(n_tasks=300, horizon=160, n_critical=2, clients=True, feature_pool="tawos",
+                      n_clients=100)
+    inst = generate_nrps(p, seed=5)
+    assert len(inst.meta["clients"]) == 100
+    with pytest.raises(ValueError):
+        FeatureParams(n_tasks=10, horizon=10, n_clients=0)
