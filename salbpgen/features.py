@@ -271,13 +271,15 @@ def generate_nrps(p: FeatureParams, seed: int | str | None = None) -> NRPSInstan
         used += k
     rng.shuffle(blocks)
 
-    clients, demand = (_clients(len(blocks), [b[0] for b in blocks], p, rng) if p.clients
+    # clients and values get their own stream, so they never change the structure (inter arcs)
+    vrng = random.Random(rng.random())
+    clients, demand = (_clients(len(blocks), [b[0] for b in blocks], p, vrng) if p.clients
                        else (None, None))
     mean_demand = 27.0 * p.n_clients / len(blocks) if p.n_clients else None  # 3 requests x E[W imp] = 9
     durations, values, arcs, features = [], [], [], []
     for i, (crit, f_arcs, dur, cp) in enumerate(blocks):
         o = len(durations)
-        values += feature_values(dur, f_arcs, p, rng, None if demand is None else demand[i],
+        values += feature_values(dur, f_arcs, p, vrng, None if demand is None else demand[i],
                                  mean_demand)
         durations += dur
         arcs += [(o + u, o + v) for u, v in f_arcs]

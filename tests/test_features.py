@@ -190,3 +190,16 @@ def test_critical_preference_shifts_demand_to_controlled_features():
     assert share(4.0) > 1.5 * share(1.0)
     with pytest.raises(ValueError):
         FeatureParams(n_tasks=10, horizon=10, critical_preference=0)
+
+
+def test_clients_do_not_change_structure():
+    from salbpgen.features import FeatureParams, generate_nrps
+
+    def structure(**kw):
+        p = FeatureParams(n_tasks=600, horizon=160, n_critical=4, clients=True, feature_pool="tawos", **kw)
+        inst = generate_nrps(p, seed=1)
+        return inst.durations, sorted(inst.arcs), [f.tasks for f in inst.features]
+
+    base = structure(n_clients=100, critical_preference=1.0)
+    assert structure(n_clients=100, critical_preference=4.0) == base
+    assert structure(n_clients=300, critical_preference=1.0) == base
