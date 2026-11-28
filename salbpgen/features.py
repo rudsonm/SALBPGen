@@ -73,6 +73,12 @@ class FeatureParams:
     # The feature value is effort_f (or |f| * mean duration) * demand_f / mean demand.
     clients: bool = False
     client_coverage: float = 2.0
+    # fixed number of clients (as in the classic nrp1-5, Bagnall et al. 2001); overrides
+    # client_coverage, so a feature gets 3 * n_clients / |F| clients on average
+    n_clients: int | None = None
+    # clients' preference for controlled features: each request picks a controlled feature
+    # with weight `critical_preference` and any other with weight 1 (1 = neutral clients)
+    critical_preference: float = 1.0
     periods_per_sp: int = 1  # periods of T (e.g. hours) per story point
     sp_weights: dict = field(default_factory=lambda: dict(TAWOS_SP))
 
@@ -87,6 +93,10 @@ class FeatureParams:
             raise ValueError("feature_pool must be None or 'tawos'")
         if self.value_mode not in ("correlated", "uncorrelated"):
             raise ValueError("value_mode must be 'correlated' or 'uncorrelated'")
+        if self.critical_preference <= 0:
+            raise ValueError("critical_preference must be positive")
+        if self.n_clients is not None and self.n_clients < 1:
+            raise ValueError("n_clients must be positive")
 
 
 @dataclass
@@ -263,10 +273,12 @@ def generate_nrps(p: FeatureParams, seed: int | str | None = None) -> NRPSInstan
 
     clients, demand = (_clients(len(blocks), [b[0] for b in blocks], p, rng) if p.clients
                        else (None, None))
+    mean_demand = 27.0 * p.n_clients / len(blocks) if p.n_clients else None  # 3 requests x E[W imp] = 9
     durations, values, arcs, features = [], [], [], []
     for i, (crit, f_arcs, dur, cp) in enumerate(blocks):
         o = len(durations)
-        values += feature_values(dur, f_arcs, p, rng, None if demand is None else demand[i])
+        values += feature_values(dur, f_arcs, p, rng, None if demand is None else demand[i],
+                                 mean_demand)
         durations += dur
         arcs += [(o + u, o + v) for u, v in f_arcs]
         if cp is None:
@@ -294,12 +306,19 @@ def generate_nrps(p: FeatureParams, seed: int | str | None = None) -> NRPSInstan
 
 def _clients(n_features: int, controlled: list[bool], p: FeatureParams, rng: random.Random):
     """Clients and the demand of each feature, sum of W_s * importance (option A)."""
-    n_clients = max(1, round(p.client_coverage * n_features / 3))  # E[requests per client] = 3
+    n_clients = p.n_clients or max(1, round(p.client_coverage * n_features / 3))  # E[requests per client] = 3
     clients = []
     for _ in range(n_clients):
         k = min(rng.randint(1, 5), n_features)
-        clients.append({"weight": rng.randint(1, 5),
-                        "requests": [[f, rng.randint(1, 5)] for f in sorted(rng.sample(range(n_features), k))]})
+        weight = rng.randint(1, 5)
+        if p.critical_preference == 1:
+            chosen = rng.sample(range(n_features), k)
+        else:  # weighted sampling without replacement (Efraimidis & Spirakis, 2006)
+            keys = [rng.random() ** (1 / (p.critical_preference if controlled[f] else 1.0))
+                    for f in range(n_features)]
+            chosen = sorted(range(n_features), key=keys.__getitem__, reverse=True)[:k]
+        clients.append({"weight": weight,
+                        "requests": [[f, rng.randint(1, 5)] for f in sorted(chosen)]})
     asked = {f for c in clients for f, _ in c["requests"]}
     for f in range(n_features):  # a controlled feature with no client would be worth 0
         if controlled[f] and f not in asked:
