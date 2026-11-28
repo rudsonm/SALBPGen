@@ -174,3 +174,19 @@ def test_fixed_number_of_clients():
     assert len(inst.meta["clients"]) == 100
     with pytest.raises(ValueError):
         FeatureParams(n_tasks=10, horizon=10, n_clients=0)
+
+
+def test_critical_preference_shifts_demand_to_controlled_features():
+    from salbpgen.features import FeatureParams, generate_nrps
+
+    def share(beta):
+        p = FeatureParams(n_tasks=600, horizon=160, n_critical=6, clients=True, feature_pool="tawos",
+                          n_clients=300, critical_preference=beta)
+        inst = generate_nrps(p, seed=3)
+        ctrl = {i for i, f in enumerate(inst.features) if f.controlled}
+        req = [f for c in inst.meta["clients"] for f, _ in c["requests"]]
+        return sum(f in ctrl for f in req) / len(req)
+
+    assert share(4.0) > 1.5 * share(1.0)
+    with pytest.raises(ValueError):
+        FeatureParams(n_tasks=10, horizon=10, critical_preference=0)

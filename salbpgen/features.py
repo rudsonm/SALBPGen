@@ -76,6 +76,9 @@ class FeatureParams:
     # fixed number of clients (as in the classic nrp1-5, Bagnall et al. 2001); overrides
     # client_coverage, so a feature gets 3 * n_clients / |F| clients on average
     n_clients: int | None = None
+    # clients' preference for controlled features: each request picks a controlled feature
+    # with weight `critical_preference` and any other with weight 1 (1 = neutral clients)
+    critical_preference: float = 1.0
     periods_per_sp: int = 1  # periods of T (e.g. hours) per story point
     sp_weights: dict = field(default_factory=lambda: dict(TAWOS_SP))
 
@@ -90,6 +93,8 @@ class FeatureParams:
             raise ValueError("feature_pool must be None or 'tawos'")
         if self.value_mode not in ("correlated", "uncorrelated"):
             raise ValueError("value_mode must be 'correlated' or 'uncorrelated'")
+        if self.critical_preference <= 0:
+            raise ValueError("critical_preference must be positive")
         if self.n_clients is not None and self.n_clients < 1:
             raise ValueError("n_clients must be positive")
 
@@ -305,8 +310,15 @@ def _clients(n_features: int, controlled: list[bool], p: FeatureParams, rng: ran
     clients = []
     for _ in range(n_clients):
         k = min(rng.randint(1, 5), n_features)
-        clients.append({"weight": rng.randint(1, 5),
-                        "requests": [[f, rng.randint(1, 5)] for f in sorted(rng.sample(range(n_features), k))]})
+        weight = rng.randint(1, 5)
+        if p.critical_preference == 1:
+            chosen = rng.sample(range(n_features), k)
+        else:  # weighted sampling without replacement (Efraimidis & Spirakis, 2006)
+            keys = [rng.random() ** (1 / (p.critical_preference if controlled[f] else 1.0))
+                    for f in range(n_features)]
+            chosen = sorted(range(n_features), key=keys.__getitem__, reverse=True)[:k]
+        clients.append({"weight": weight,
+                        "requests": [[f, rng.randint(1, 5)] for f in sorted(chosen)]})
     asked = {f for c in clients for f, _ in c["requests"]}
     for f in range(n_features):  # a controlled feature with no client would be worth 0
         if controlled[f] and f not in asked:
